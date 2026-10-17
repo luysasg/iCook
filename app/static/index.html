@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bateu a Vontade</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">🍳</span>
+        <div>
+          <h1>Bateu a Vontade</h1>
+          <p>da vontade ao pedido de mercado</p>
+        </div>
+      </div>
+      <div class="actions">
+        <a id="connect" class="pill pill-cta" href="/login" hidden>Conectar iFood</a>
+        <span id="connected" class="pill pill-ok" hidden>● iFood conectado</span>
+        <button id="reset" class="pill pill-ghost" type="button">Nova conversa</button>
+      </div>
+    </header>
+
+    <main id="chat" class="chat" aria-live="polite"></main>
+
+    <form id="composer" class="composer" autocomplete="off">
+      <input id="input" type="text" placeholder="Ex.: quero fazer um strogonoff pra 4 pessoas" maxlength="2000">
+      <button id="send" type="submit" aria-label="Enviar">➤</button>
+    </form>
+  </div>
+
+  <template id="typing-template">
+    <div class="msg bot typing"><div class="bubble"><span></span><span></span><span></span><em class="typing-label"></em></div></div>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
