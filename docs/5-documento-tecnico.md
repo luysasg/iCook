@@ -66,8 +66,3 @@ o número de chamadas ao LLM constante, independente do tamanho da lista.
    inválido → próximo modelo), trocável só por `.env`.
 7. **`DRY_RUN`.** Fluxo inteiro contra o iFood real, exceto `submitOrder`, para demonstração segura.
 
-## Limitações conhecidas
-
-Sessões em memória; login por navegador (sem QR/device flow); sem escopos OAuth, `getUser` só no nível
-BASIC; cartões não salvos não são oferecidos (`setCartPayment` exige `cardTokenId`); itens por peso
-assumidos como preço por kg; itens entram com `options: []` sem consultar `getItem`.
