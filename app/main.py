@@ -215,11 +215,11 @@ async def track(request: Request) -> JSONResponse:
 @app.post("/api/reset")
 async def reset(request: Request) -> JSONResponse:
     old = _session(request)
-    # Keep the login and the cart bookkeeping (a store's open cart is resumed, not recreated).
-    s = agent.Session(old.id, tokens=old.tokens, guard=old.guard)
+    # Keep the login, the getUser profile and the cart bookkeeping (a store's open cart is resumed, not recreated).
+    s = agent.Session(old.id, tokens=old.tokens, guard=old.guard, profile=old.profile)
     SESSIONS[old.id] = s
     if s.connected:
-        return await _locked(s, agent.ask_address(s))
+        return await _locked(s, agent.new_conversation(s))
     return _payload(s)
 
 

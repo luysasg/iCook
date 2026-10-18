@@ -9,12 +9,6 @@ let state = { phase: "chat", connected: false, dry_run: false, needs_resume: fal
 const revisions = new Map(); // message id -> rev rendered
 let trackTimer = null;
 
-const PLACEHOLDERS = {
-  address: "Ex.: estou em casa",
-  pantry: "Ex.: 1, 3 ou \"tenho arroz e cebola\"",
-  need_document: "CPF (só números) ou passaporte",
-  ordered: "Ex.: cadê meu pedido?",
-};
 const ALLERGEN = {
   compatible: ["Compatível*", "tag-ok"],
   uncertain: ["Verificar rótulo", "tag-unsure"],
@@ -153,11 +147,12 @@ function chipsFor(message) {
     chips.map((text) => h("button", { type: "button", class: "chip", onclick: () => sendText(text) }, text)));
 }
 
-function radioCard(name, options, buttonLabel, phases, onSubmit) {
+function radioCard(name, options, buttonLabel, phases, onSubmit, selected) {
+  const checkedIndex = Math.max(0, options.findIndex((o) => o.value === selected));
   const fieldset = h("fieldset", { class: "options" },
     h("legend", { class: "sr-only" }, buttonLabel),
     options.map((o, i) => h("label", { class: "option" },
-      control(h("input", { type: "radio", name, value: o.value, checked: i === 0 }), phases),
+      control(h("input", { type: "radio", name, value: o.value, checked: i === checkedIndex }), phases),
       h("span", null, o.label, o.hint ? h("span", { class: "hint" }, o.hint) : null))));
   const button = control(h("button", {
     type: "button", class: "btn btn-primary btn-block",
@@ -237,9 +232,13 @@ function addressChoices(data) {
 }
 
 function paymentCard(data) {
-  const options = data.options.map((o) => ({ value: o.number, label: o.label, hint: o.offline ? "Pague na entrega" : null }));
+  const options = data.options.map((o) => ({
+    value: o.number, label: o.label,
+    hint: [o.number === data.selected ? "Salva na sua conta" : null, o.offline ? "Pague na entrega" : null]
+      .filter(Boolean).join(" · ") || null,
+  }));
   return radioCard("payment", options, "Usar esta forma de pagamento", "payment,voucher,checkout",
-    (number, label) => run(`Pagar com ${label}`, () => api("/api/choose_payment", { number })));
+    (number, label) => run(`Pagar com ${label}`, () => api("/api/choose_payment", { number })), data.selected);
 }
 
 function voucherCard(data) {
@@ -275,7 +274,7 @@ function summaryCard(data) {
       return [h("span", { class: grand }, l.label), h("span", { class: grand }, l.value)];
     })),
     h("label", { class: "field", for: documentInput.id }, "CPF/CNPJ na nota, ou passaporte (opcional)", documentInput),
-    data.dry_run ? h("div", { class: "warn" }, "Modo demonstração: o pedido não será enviado ao iFood.") : null,
+    data.dry_run ? h("p", { class: "test-mode", role: "note" }, "Modo de teste: seu pedido não será feito.") : null,
     button);
 }
 
@@ -330,9 +329,9 @@ function renderMessage(message) {
       row.append(bubble(message.text));
       break;
     case "login":
-      row.append(bubble(message.text), h("button", {
-        type: "button", class: "btn btn-primary", "data-login": "1", onclick: startLogin,
-      }, "Conectar iFood"));
+      row.append(bubble(message.text), h("div", { class: "card connect-card", "data-login": "1" },
+        h("p", null, "O login abre numa janela do iFood. Esta conversa continua aqui."),
+        h("button", { type: "button", class: "btn btn-primary btn-block", onclick: startLogin }, "Conectar ao iFood")));
       break;
     default:
       row.append(bubble(message.text));
@@ -371,16 +370,15 @@ function refreshControls() {
     chips.hidden = chips.closest(".msg") !== last;
     chips.querySelectorAll("button").forEach((b) => { b.disabled = busy; });
   });
-  chat.querySelectorAll("[data-login]").forEach((b) => { b.hidden = state.connected; });
+  // Only the latest connect card, and only while disconnected.
+  chat.querySelectorAll("[data-login]").forEach((card) => {
+    card.hidden = state.connected || card.closest(".msg") !== lastOfKind("login");
+  });
   const summary = lastOfKind("summary");
   if (summary && ["ordered", "need_document"].includes(state.phase)) {
     const button = summary.querySelector("[data-confirm]");
     if (button && state.phase === "ordered") button.textContent = "Pedido confirmado ✓";
   }
-  document.getElementById("connect").hidden = state.connected;
-  document.getElementById("connected").hidden = !state.connected;
-  document.getElementById("demo").hidden = !state.dry_run;
-  input.placeholder = PLACEHOLDERS[state.phase] || "Escreva sua mensagem";
   input.disabled = busy;
   sendButton.disabled = busy;
 }
@@ -568,7 +566,6 @@ function resumeAfterLogin() {
   run("", () => api("/api/resume", {}));
 }
 
-document.getElementById("connect").addEventListener("click", startLogin);
 window.addEventListener("message", (event) => {
   if (event.origin === location.origin) onAuthMessage(event.data);
 });

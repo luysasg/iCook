@@ -14,9 +14,24 @@ from . import config
 
 log = logging.getLogger("ifood")
 
+# Personal data never reaches the server log (getUser, payment methods, documents).
+PRIVATE_KEYS = {
+    "fullname", "firstname", "lastname", "email", "phone", "phonenumber", "taxpayeridentificationnumber",
+    "document", "cpf", "cnpj", "userid", "customerid", "cardtokenid", "lastdigits", "last4", "lastfourdigits",
+    "userbehaviordescription",
+}
+
+
+def redact(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: "***" if k.lower() in PRIVATE_KEYS else redact(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact(v) for v in value]
+    return value
+
 
 class Unauthorized(Exception):
-    """The access token was rejected (HTTP 401)."""
+    """The access token was rejected (HTTP 401 or an inline AUTHENTICATION_REQUIRED error)."""
 
 
 class IFoodError(Exception):
@@ -37,8 +52,7 @@ class IFoodMCP:
         self._client = client
 
     async def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        logged = {k: ("***" if k == "document" else v) for k, v in arguments.items()}
-        log.info("→ %s %s", tool, json.dumps(logged, ensure_ascii=False))
+        log.info("→ %s %s", tool, json.dumps(redact(arguments), ensure_ascii=False))
         result = await self._client.call_tool(tool, arguments)
         text = "\n".join(c.text for c in result.content if getattr(c, "type", None) == "text")
         data = result.structured_content
@@ -47,7 +61,10 @@ class IFoodMCP:
                 data = json.loads(text) if text else {}
             except json.JSONDecodeError:
                 data = {"text": text}
-        log.info("← %s %s", tool, json.dumps(data, ensure_ascii=False)[:3000])
+        log.info("← %s %s", tool, json.dumps(redact(data), ensure_ascii=False)[:3000])
+        error = data.get("error") if isinstance(data, dict) else None
+        if "AUTHENTICATION_REQUIRED" in text or (isinstance(error, dict) and error.get("code") == "AUTHENTICATION_REQUIRED"):
+            raise Unauthorized
         if result.is_error:
             raise IFoodError(tool, text or json.dumps(data, ensure_ascii=False))
         return data

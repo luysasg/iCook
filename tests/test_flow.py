@@ -4,11 +4,12 @@ import json
 import re
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 import pytest
 
-from app import agent, auth, config, ifood, llm, prompts, shopping
+from app import agent, auth, config, ifood, llm, prompts, shopping, user
 from app.guard import Guard, GuardError
 from app.ifood import IFoodError
 from app.jsonutil import as_number
@@ -58,14 +59,27 @@ CATALOG = {
 }
 
 
+# Shape of the real getUser answer for the test account (BASIC tier only).
+BASIC_USER = {
+    "success": True,
+    "data": {"fullName": "MARIA SOUZA LIMA", "email": "maria@test.ifood.com.br", "phone": "5511999998888"},
+    "agentHints": {"suggestedNextAction": "Use the user's name for personalization."},
+}
+
+
 class FakeIFood:
     def __init__(self, require_document=False):
         self.calls = []
         self.require_document = require_document
         self.cart_items = []
+        self.user = BASIC_USER
 
     async def call(self, tool, args):
         self.calls.append((tool, args))
+        if tool == "getUser":
+            if isinstance(self.user, Exception):
+                raise self.user
+            return self.user
         if tool == "listAddresses":
             return {
                 "addresses": [
@@ -636,3 +650,208 @@ def test_as_number():
     assert as_number("12.5") == 12.5
     assert as_number({"value": 3}) == 3.0
     assert as_number(True) is None
+
+
+# ---------------------------------------------------------------- header, connect card, input
+
+STATIC = Path(__file__).parent.parent / "app" / "static"
+
+
+def test_header_keeps_only_the_brand():
+    html = (STATIC / "index.html").read_text()
+    header = re.search(r"<header.*?</header>", html, re.DOTALL).group(0)
+    assert "Bateu a Vontade" in header
+    for removed in ('id="demo"', 'id="connect"', 'id="connected"', "Demonstração", "Conectado", "Conectar iFood"):
+        assert removed not in header
+    script = (STATIC / "app.js").read_text()
+    for removed in ('getElementById("connect")', 'getElementById("connected")', 'getElementById("demo")'):
+        assert removed not in script
+
+
+def test_chat_input_has_no_placeholder_but_is_labelled():
+    tag = re.search(r'<input id="input"[^>]*>', (STATIC / "index.html").read_text()).group(0)
+    assert "placeholder" not in tag and 'aria-label="Mensagem"' in tag
+    assert "input.placeholder" not in (STATIC / "app.js").read_text()
+    assert ".composer input:focus-visible" in (STATIC / "style.css").read_text()
+
+
+def test_test_mode_notice_only_in_the_confirmation_card():
+    script = (STATIC / "app.js").read_text()
+    summary = re.search(r"function summaryCard.*?\n}\n", script, re.DOTALL).group(0)
+    assert "Modo de teste: seu pedido não será feito." in summary
+    assert script.count("Modo de teste") == 1
+
+
+def test_disconnected_page_starts_with_welcome_and_connect_card():
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    state = TestClient(app).get("/api/state").json()
+    assert state["connected"] is False
+    assert [(m["kind"], m["text"]) for m in state["messages"]] == [("login", prompts.WELCOME)]
+
+
+class _ToolResult:
+    def __init__(self, payload, is_error=False):
+        self.content = [type("Text", (), {"type": "text", "text": json.dumps(payload)})()]
+        self.structured_content = None
+        self.is_error = is_error
+
+
+class _MCPClient:
+    def __init__(self, payload, is_error=False):
+        self.result = _ToolResult(payload, is_error)
+
+    async def call_tool(self, tool, arguments):
+        return self.result
+
+
+async def test_inline_authentication_error_is_unauthorized():
+    payload = {"success": False, "error": {"code": "AUTHENTICATION_REQUIRED", "message": "login"}}
+    with pytest.raises(ifood.Unauthorized):
+        await ifood.IFoodMCP(_MCPClient(payload)).call("listAddresses", {})
+
+
+async def test_auth_error_during_getuser_shows_the_connect_card(fake):
+    ifood_fake, _ = fake
+    ifood_fake.user = {"success": False, "error": {"code": "AUTHENTICATION_REQUIRED"}}
+    s = connected_session(address=None)
+    out = await agent.resume(s)
+    assert out[-1]["kind"] == "login" and not s.connected
+
+
+# ---------------------------------------------------------------- getUser personalization
+
+
+async def test_greets_by_first_name_and_keeps_contact_data_out(fake):
+    ifood_fake, scripted = fake
+    s = connected_session(address=None)
+    out = await agent.resume(s)
+    assert ifood_fake.calls[0] == ("getUser", {"includeProfileData": True})
+    assert out[-1]["kind"] == "addresses" and out[-1]["text"].startswith("Oi, Maria! 👋")
+
+    scripted.turns = [{"reply": "Oi, Maria!", "action": "none"}]
+    await agent.choose_address(s, 0, from_button=True)
+    await agent.handle_message(s, "oi")
+    system = agent._system_prompt(s)
+    assert "Primeiro nome: Maria" in system
+    for private in ("maria@test", "5511999998888", "SOUZA", "Souza"):
+        assert private not in system and all(private not in m["text"] for m in s.messages)
+
+    # Once per session: a reconnect or a new conversation doesn't call getUser again.
+    await agent.resume(s)
+    await agent.new_conversation(s)
+    assert ifood_fake.tools().count("getUser") == 1
+
+
+async def test_personal_data_is_redacted_in_logs(fake, caplog):
+    _, scripted = fake
+    caplog.set_level("INFO")
+    await ifood.IFoodMCP(_MCPClient(BASIC_USER)).call("getUser", {"includeProfileData": True})
+    cards = {"paymentMethods": [{"paymentMethodId": "pm", "cards": [{"cardTokenId": "tok-9", "lastDigits": "4242"}]}]}
+    await ifood.IFoodMCP(_MCPClient(cards)).call("listPaymentMethods", {"merchantId": "m"})
+
+    s = connected_session()
+    s.profile = user.UserProfile(first_name="Maria")
+    scripted.turns = [{"reply": "Oi, Maria! Bora cozinhar?", "action": "none"}]
+    await agent.handle_message(s, "oi")
+    logged = caplog.text
+    assert "decision" in logged and "getUser" in logged
+    for private in ("MARIA", "Maria", "maria@test", "5511999998888", "tok-9", "4242"):
+        assert private not in logged
+
+
+async def test_getuser_failure_falls_back_and_retries_once(fake, monkeypatch):
+    ifood_fake, _ = fake
+    monkeypatch.setattr(agent, "PROFILE_RETRY_SECONDS", 0)
+    ifood_fake.user = {"success": False, "error": {"code": "SERVICE_UNAVAILABLE", "message": "down"},
+                       "agentHints": {"suggestedNextAction": "retry"}}
+    s = connected_session(address=None)
+    out = await agent.resume(s)
+    assert out[-1]["text"].startswith("Oi! 👋") and s.profile is None  # generic greeting, no personalization
+
+    ifood_fake.user = BASIC_USER
+    await s.profile_retry
+    assert s.profile.first_name == "Maria" and ifood_fake.tools().count("getUser") == 2
+
+
+async def test_getuser_retry_happens_only_once(fake, monkeypatch):
+    ifood_fake, _ = fake
+    monkeypatch.setattr(agent, "PROFILE_RETRY_SECONDS", 0)
+    ifood_fake.user = IFoodError("getUser", "timeout")
+    s = connected_session(address=None)
+    await agent.resume(s)
+    await s.profile_retry
+    assert s.profile is None and ifood_fake.tools().count("getUser") == 2
+    assert "Primeiro nome" not in agent._system_prompt(s)
+
+
+def test_missing_user_fields_mean_no_personalization():
+    profile = user.parse_user({"success": True, "data": {"email": "x@y.z"}})
+    assert profile.first_name is None and profile.prompt_block() == ""
+    assert prompts.greeting(profile.first_name) == "Oi! 👋"
+    assert user.parse_user({"success": True, "data": {"fullName": "  "}}).first_name is None
+
+
+BEHAVIOR_USER = {
+    "success": True,
+    "data": {
+        "fullName": "Maria Souza",
+        "email": "maria@test.ifood.com.br",
+        "phone": "5511999998888",
+        "taxPayerIdentificationNumber": "123.456.789-10",
+        "paymentMethods": [{"id": "pm2", "type": "pix"}, {"id": "pm1", "type": "credit_card", "lastDigits": "9999"}],
+        "profileData": {
+            "userBehaviorDescription": "Pede mercado no almoço\n\nem dias úteis.",
+            "topMerchantTypes": [{"merchantType": "RESTAURANT", "count": "3"}, {"merchantType": "GROCERIES", "count": "12"}],
+            "topWeekDayShift": {"weekDay": "WEEKDAY", "shift": "LUNCH"},
+            "ordersByMerchantTypeWeekdayAndShift": {"GROCERIES": {"MONDAY": {"LUNCH": "4", "DINNER": "0"}}},
+        },
+    },
+}
+
+
+def test_behavior_data_is_parsed_leniently_and_counts_converted():
+    profile = user.parse_user(BEHAVIOR_USER)
+    assert profile.categories == ["Mercado (12 pedidos)", "Restaurante (3 pedidos)"]  # "12" > "3" as numbers
+    assert profile.patterns == ["dias úteis · almoço", "Mercado · segunda · almoço (4 pedidos)"]
+    assert profile.persona == "Pede mercado no almoço em dias úteis."
+    block = profile.prompt_block()
+    assert "Pagamentos salvos: Pix; Credit card final 9999" in block
+    for private in ("maria@", "5511", "123.456", "Souza", "pm1", "pm2"):
+        assert private not in block
+
+    lunch = user.datetime(2026, 10, 19, 12, 30)  # a Monday
+    assert user.craving_chips(profile, prompts.CRAVING_CHIPS, lunch)[0] == "Algo leve pro almoço"
+    assert user.craving_chips(profile, prompts.CRAVING_CHIPS, lunch.replace(hour=20)) == prompts.CRAVING_CHIPS
+    assert user.craving_chips(None, prompts.CRAVING_CHIPS, lunch) == prompts.CRAVING_CHIPS
+    # Partial/odd shapes never break and never invent anything.
+    odd = {"data": {"profileData": {"topMerchantTypes": "GROCERIES", "ordersByDay": {"Friday": "x"}}}}
+    assert user.parse_user(odd).categories == ["Mercado"] and user.parse_user(odd).patterns == []
+
+
+async def test_saved_payment_is_preselected_but_user_can_pick_another(fake):
+    ifood_fake, scripted = fake
+    s = connected_session()
+    s.profile = user.parse_user(BEHAVIOR_USER)  # Pix saved first
+    scripted.turns = [{"reply": "", "action": "search_stores", "shopping_list": SHOPPING_LIST[:1]}]
+    await agent.handle_message(s, "pode buscar")
+    out = await agent.choose_store(s, 0)
+    card = out[-1]
+    assert card["data"]["selected"] == 2 and "**Pix**" in card["text"]  # options: Visa, Pix, Dinheiro
+    assert "Pré-selecionada (salva na conta, a pessoa ainda confirma): 2" in agent._state_block(s)
+    assert "setCartPayment" not in ifood_fake.tools()  # pre-selected, not applied
+
+    await agent.choose_payment(s, 2, from_button=True)  # Dinheiro instead
+    assert ("setCartPayment", {"cartId": "cart-1", "paymentMethodId": "pm-cash"}) in ifood_fake.calls
+
+
+async def test_no_preselection_without_saved_payments(fake):
+    _, scripted = fake
+    s = connected_session()
+    s.profile = user.parse_user(BASIC_USER)
+    scripted.turns = [{"reply": "", "action": "search_stores", "shopping_list": SHOPPING_LIST[:1]}]
+    await agent.handle_message(s, "pode buscar")
+    out = await agent.choose_store(s, 0)
+    assert out[-1]["data"]["selected"] is None and "Como você quer pagar?" in out[-1]["text"]

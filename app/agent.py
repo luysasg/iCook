@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import auth, config, ifood, llm, prompts, shopping
+from . import auth, config, ifood, llm, prompts, shopping, user
 from .guard import Guard, GuardedClient
 from .ifood import IFoodError
 from .jsonutil import brl, first_value
@@ -42,11 +42,14 @@ TOOL_STATUS = {
     "setCartPayment": "Aplicando a forma de pagamento…",
     "listVouchers": "Procurando cupons…",
     "setVoucher": "Aplicando o cupom…",
+    "getUser": "Carregando seu perfil…",
     "submitOrder": "Enviando o pedido ao iFood…",
     "trackOrder": "Consultando o status do pedido…",
     "getOrder": "Consultando seu pedido…",
 }
 THINKING = "Pensando…"
+# getUser fails → no personalization now, one more try in the background after this delay.
+PROFILE_RETRY_SECONDS = 3.0
 
 # Progress steps of the tracker card. The status text itself is shown verbatim from trackOrder.
 ORDER_STEPS = ["Recebido", "Confirmado", "Em preparo", "A caminho", "Entregue"]
@@ -138,6 +141,10 @@ class Session:
     short_code: str | None = None
     dry_run_step: int = 0
     guard: Guard = field(default_factory=Guard)
+    # From getUser, once per session (kept on "Nova conversa"); None = not loaded or failed.
+    profile: user.UserProfile | None = None
+    profile_retry: asyncio.Task | None = None
+    payment_preselected: int | None = None  # index into payment_options
     activity: str = ""  # what is running right now, for the UI status line
     # Interrupted by a disconnection: replayed after the next login.
     pending: tuple[Callable[[], Awaitable[list[dict]]], str] | None = None
@@ -170,6 +177,7 @@ class Session:
         self.store = None
         self.cart_id = None
         self.payment_options = []
+        self.payment_preselected = None
         self.payment = None
         self.vouchers = []
         self.voucher = None
@@ -200,6 +208,11 @@ class Session:
         if remember:
             self._remember("model", history_text or text)
         return message
+
+    def redact(self, text: str) -> str:
+        """For logs: the user's name never goes to the server console."""
+        name = self.profile.first_name if self.profile else None
+        return re.sub(rf"\b{re.escape(name)}\b", "***", text, flags=re.IGNORECASE) if name else text
 
     def update(self, message_id: str | None, data: dict[str, Any]) -> dict[str, Any] | None:
         """Changes a card already on screen (tracker refresh, ticked ingredients)."""
@@ -270,8 +283,16 @@ def _numbered(options: list[str]) -> str:
     return "\n".join(f"{n}. {label}" for n, label in enumerate(options, 1))
 
 
+def _system_prompt(s: Session) -> str:
+    return prompts.AGENT_SYSTEM + (s.profile.prompt_block() if s.profile else "") + _state_block(s)
+
+
 def _state_block(s: Session) -> str:
-    lines = ["\n## Estado atual (informação do sistema; não repita literalmente)", f"Fase: {s.phase}"]
+    lines = [
+        "\n## Estado atual (informação do sistema; não repita literalmente)",
+        user.now_line(user.now_sp()),
+        f"Fase: {s.phase}",
+    ]
     if s.servings:
         lines.append(f"Pessoas: {s.servings}")
     if s.restrictions:
@@ -298,6 +319,8 @@ def _state_block(s: Session) -> str:
     if s.phase == "payment":
         lines.append("Formas de pagamento na tela:")
         lines.append(_numbered([o.label for o in s.payment_options]))
+        if s.payment_preselected is not None:
+            lines.append(f"Pré-selecionada (salva na conta, a pessoa ainda confirma): {s.payment_preselected + 1}")
     if s.phase == "voucher":
         lines.append("Cupons na tela (0 = sem cupom):")
         lines.append(_numbered([v.label for v in s.vouchers]))
@@ -387,14 +410,14 @@ async def handle_message(s: Session, text: str, heard: bool = False) -> list[dic
     s.activity = THINKING
     try:
         decision = await llm.generate_json(
-            prompts.AGENT_SYSTEM + _state_block(s), llm.to_contents(s.history), prompts.AGENT_SCHEMA
+            _system_prompt(s), llm.to_contents(s.history), prompts.AGENT_SCHEMA
         )
     except llm.RateLimited:
         return [_rate_limited(s)]
     except llm.LLMError:
         log.exception("LLM failed")
         return [s.say("Tive um probleminha para pensar na resposta. Pode repetir?", remember=False)]
-    log.info("decision: %s", json.dumps(decision, ensure_ascii=False))
+    log.info("decision: %s", s.redact(json.dumps(decision, ensure_ascii=False)))
 
     out = []
     if isinstance(decision.get("servings"), int) and decision["servings"] > 0:
@@ -446,19 +469,70 @@ async def handle_message(s: Session, text: str, heard: bool = False) -> list[dic
     elif action == "restart":
         s.start_new_order()
         if not out:
-            out.append(s.say(prompts.ASK_CRAVING, data={"chips": prompts.CRAVING_CHIPS}))
+            out.append(s.say(prompts.ASK_CRAVING, data={"chips": _craving_chips(s)}))
     if not out:
         out.append(s.say("Não entendi bem. Pode dizer de outro jeito? 🙂", remember=False))
     return out
 
 
 async def resume(s: Session) -> list[dict]:
-    """Right after a login: pick the address if needed, then continue what was interrupted."""
+    """Right after a login: getUser (once), greet, pick the address if needed, continue what was interrupted."""
+    try:
+        await load_profile(s)
+    except ifood.Unauthorized:
+        s.tokens = None
+        return [_disconnected(s)]
+    name = s.profile.first_name if s.profile else None
     if s.address is None:
-        return await ask_address(s, intro="Conta iFood conectada! ✅ ")
-    return [s.say("Conta iFood conectada! ✅ Continuando de onde paramos.", remember=False)] + (
-        await _replay_pending(s)
-    )
+        return await ask_address(s, intro=f"{prompts.greeting(name)} Sua conta iFood está conectada. ")
+    again = f"Pronto, {name}!" if name else "Pronto!"
+    return [s.say(f"{again} Continuando de onde paramos.", remember=False)] + await _replay_pending(s)
+
+
+async def new_conversation(s: Session) -> list[dict]:
+    """"Nova conversa" while connected: same profile (getUser only if it never loaded), new address question."""
+    try:
+        await load_profile(s)
+    except ifood.Unauthorized:
+        s.tokens = None
+        return [_disconnected(s)]
+    return await ask_address(s, intro=f"{prompts.greeting(s.profile.first_name if s.profile else None)} ")
+
+
+async def load_profile(s: Session) -> None:
+    """getUser once per session. On failure: no personalization now and one retry in the background."""
+    if s.profile is not None or (s.profile_retry and not s.profile_retry.done()):
+        return
+    try:
+        s.profile = await _fetch_profile(s)
+    except (NotConnected, ifood.Unauthorized):
+        raise ifood.Unauthorized from None
+    except Exception as e:  # noqa: BLE001 - any failure only costs the personalization
+        log.warning("getUser failed (%s); retrying once in the background", _error_code(e))
+        s.profile_retry = asyncio.create_task(_retry_profile(s))
+
+
+async def _fetch_profile(s: Session) -> user.UserProfile:
+    async with _ifood(s) as client:
+        return user.parse_user(await client.call("getUser", {"includeProfileData": True}))
+
+
+async def _retry_profile(s: Session) -> None:
+    await asyncio.sleep(PROFILE_RETRY_SECONDS)
+    try:
+        s.profile = await _fetch_profile(s)
+        log.info("getUser retry succeeded")
+    except Exception as e:  # noqa: BLE001 - a background task must not crash
+        log.warning("getUser retry failed (%s); continuing without personalization", _error_code(e))
+
+
+def _error_code(e: Exception) -> str:
+    # Never the message: it may echo personal data.
+    return getattr(e, "code", None) or type(e).__name__
+
+
+def _craving_chips(s: Session) -> list[str]:
+    return user.craving_chips(s.profile, prompts.CRAVING_CHIPS, user.now_sp())
 
 
 async def _replay_pending(s: Session) -> list[dict]:
@@ -520,7 +594,7 @@ async def choose_address(s: Session, index: int, from_button: bool = False) -> l
     return [
         s.say(
             f"Combinado, entrega em **{s.address.label}**. 📍\n\n{prompts.ASK_CRAVING}",
-            data={"chips": prompts.CRAVING_CHIPS},
+            data={"chips": _craving_chips(s)},
         )
     ]
 
@@ -629,15 +703,21 @@ async def choose_store(s: Session, index: int, from_button: bool = False) -> lis
             s.phase = "compare"
             return [s.say(f"O {store.name} não tem nenhuma forma de pagamento disponível pra você. Quer outro mercado?")]
         s.phase = "payment"
+        s.payment_preselected = user.preferred_payment(s.profile, payment_options)
         text = f"Carrinho pronto no **{store.name}**. Como você quer pagar?"
+        if s.payment_preselected is not None:
+            saved = payment_options[s.payment_preselected].label
+            text = (f"Carrinho pronto no **{store.name}**. Deixei marcado **{saved}**, que está salvo na sua conta. "
+                    "Confirme ou escolha outra forma:")
         if store.missing:
             text = f"⚠️ Vai sem: {', '.join(store.missing)}.\n\n" + text
+        selected = s.payment_preselected + 1 if s.payment_preselected is not None else None
         return [
             s.say(
                 text,
                 kind="payment",
                 data={"options": [{"number": n, "label": o.label, "offline": o.offline}
-                                  for n, o in enumerate(payment_options, 1)]},
+                                  for n, o in enumerate(payment_options, 1)], "selected": selected},
                 history_text=f"{text}\n{_numbered([o.label for o in payment_options])}",
             )
         ]
@@ -752,7 +832,7 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
         s.order_id, s.short_code, s.dry_run_step = f"demo-{secrets.token_hex(3)}", "DEMO", 0
         s.phase = "ordered"
         out = [s.say(
-            f"Pedido simulado no **{checkout.store.name}** (modo demonstração: nada foi enviado ao iFood). 🧪",
+            f"Pedido simulado no **{checkout.store.name}** (modo de teste: nada foi enviado ao iFood). 🧪",
             kind="order", data={"order_id": s.order_id, "short_code": s.short_code, "dry_run": True},
         )]
         return out + [s.say("", kind="tracker", data=_simulated_track(s), remember=False)]

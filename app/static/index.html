@@ -18,9 +18,6 @@
         </div>
       </div>
       <div class="actions">
-        <span id="demo" class="pill pill-demo" hidden title="DRY_RUN: tudo roda, menos o envio final do pedido">Demonstração</span>
-        <button id="connect" class="btn btn-primary btn-small" type="button" hidden>Conectar iFood</button>
-        <span id="connected" class="pill pill-ok" hidden><span class="dot" aria-hidden="true"></span>Conectado</span>
         <button id="reset" class="btn btn-ghost btn-small" type="button" aria-label="Começar uma nova conversa">Nova conversa</button>
       </div>
     </header>
@@ -31,7 +28,7 @@
 
     <form id="composer" class="composer" autocomplete="off">
       <label for="input" class="sr-only">Mensagem</label>
-      <input id="input" type="text" placeholder="Escreva sua mensagem" maxlength="2000" enterkeyhint="send">
+      <input id="input" type="text" aria-label="Mensagem" maxlength="2000" enterkeyhint="send">
       <button id="send" class="send" type="submit" aria-label="Enviar mensagem">
         <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z"/></svg>
       </button>

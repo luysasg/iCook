@@ -15,12 +15,14 @@ uv run uvicorn app.main:app --port 8000
 ```
 
 Open http://localhost:8000 (it must be `localhost`: the iFood OAuth client only accepts
-`http://localhost[:port]/callback` as redirect URI), click **Conectar iFood**, and log in
-with the test user. The login opens in a popup (or a new tab if pop-ups are blocked); the
-chat tab stays put and continues the interrupted task when the login finishes.
+`http://localhost[:port]/callback` as redirect URI), click **Conectar ao iFood** on the card in
+the chat, and log in with the test user. The login opens in a popup (or a new tab if pop-ups are
+blocked); the chat tab stays put and continues the interrupted task when the login finishes. The
+same card shows up in the chat whenever iFood says the session is no longer authenticated.
 
-**Demo mode:** `DRY_RUN=true` in `.env` runs everything against iFood (cart, payment, voucher,
-`getCart`) except the final `submitOrder`; the tracker shows a simulated status.
+**Test mode:** `DRY_RUN=true` in `.env` runs everything against iFood (cart, payment, voucher,
+`getCart`) except the final `submitOrder`; the confirmation card says "Modo de teste: seu pedido não
+será feito." and the tracker shows a simulated status.
 
 Tests (offline, fake iFood + scripted LLM): `uv run pytest` · Lint: `uvx ruff check app tests`
 
@@ -29,12 +31,13 @@ Tests (offline, fake iFood + scripted LLM): `uv run pytest` · Lint: `uvx ruff c
 | Step | Who does it |
 |---|---|
 | Login | Required before anything. Messages typed before login are kept and replayed after it |
+| Profile | `getUser` once per session, right after login: greeting by first name; a compact profile (first name, saved payment methods, behavior data when the tier has it) goes into the system prompt. Email, phone, full name, tax ID and user IDs never reach the LLM, the UI or the logs. On failure: generic greeting, one retry in the background |
 | Delivery address | Right after login: `listAddresses`, the user picks where they are now (button or text). "Trocar endereço" later redoes the comparison |
 | Dish, servings, allergies | LLM via OpenRouter (one call per user message, JSON-schema output, one question at a time, quick-reply chips) |
 | Recipe → pantry | The recipe card comes first (numbered ingredient checklist + steps), then "what do you already have?". Numbers ("1, 3"), "não tenho nenhum" and "tenho todos" are parsed in code; names go through the LLM. Only the missing ingredients are searched |
 | Store comparison | Code: one `searchOffers` per ingredient across open GROCERIES stores, top `MAX_STORES` by coverage, gap-filling searches inside each of them, then **one** LLM call to match products, round quantities up and label them compatible / uncertain / avoid for the user's restrictions |
 | Cart | Code: `createCart` (items with `options: []`), or `getCart` + add/update/remove when that store already has a cart → `getCartDeliveryMethods` → `setCartDelivery` (ASAP) |
-| Payment | `listPaymentMethods` → the user picks (card token only for saved cards) → `setCartPayment` |
+| Payment | `listPaymentMethods` → the user picks (card token only for saved cards; a method saved in `getUser` comes pre-selected but must still be confirmed) → `setCartPayment` |
 | Voucher | `listVouchers` → the user picks one or "sem cupom" → `setVoucher` (code + campaignId from the list) |
 | Review | `getCart` → summary card (items, fees, voucher, total, optional CPF/CNPJ/passport) |
 | Order | Only the **Confirmar pedido** button calls `submitOrder` (`userConsent: true`). The LLM has no access to it |
@@ -47,7 +50,7 @@ open cart is resumed instead of recreated, and `submitOrder` needs delivery + pa
 
 Code map: `app/main.py` (web + popup login), `app/agent.py` (conversation state machine),
 `app/guard.py` (MCP rule enforcement), `app/shopping.py` (search/compare/cart),
-`app/prompts.py` (prompts), `app/ifood.py` (MCP client), `app/auth.py` (OAuth + PKCE),
+`app/prompts.py` (prompts), `app/user.py` (getUser profile), `app/ifood.py` (MCP client + log redaction), `app/auth.py` (OAuth + PKCE),
 `app/static/` (chat UI).
 
 ## Known gaps / assumptions (first version)
@@ -56,6 +59,9 @@ Code map: `app/main.py` (web + popup login), `app/agent.py` (conversation state 
   and `refresh_token` grants (no device flow), and the client rejects non-loopback redirects,
   so a phone can't complete the login for the laptop.
 - **No scopes are requested**: the client is not allowed to request any of the documented ones.
+  So `getUser` returns only the BASIC tier for the test account (`fullName`, `email`, `phone`):
+  no saved payment methods and no `profileData`. Pre-selection and behavior-based suggestions
+  follow the documented ADVANCED/BEHAVIOR shapes but are only tested offline.
 - **Cart/payment/voucher/order response shapes are undocumented**, so they are read leniently
   (`app/jsonutil.py`). Every MCP call and response is logged to the server console (the full
   `getCart` payload included); the UI only shows the clean summary.
