@@ -158,24 +158,3 @@ uvx ruff format --check app tests
 ├── .env.example      # modelo das variáveis de ambiente
 └── pyproject.toml    # dependências e configuração do pytest e do Ruff
 ```
-
-## Limitações conhecidas
-
-- **O login é pelo navegador, não por QR code.** O `id.ifood.com.br` só aceita os fluxos
-  `authorization_code` e `refresh_token`, e o client recusa redirecionamentos que não sejam
-  loopback.
-- **Nenhum escopo é pedido**, então, na conta de teste, o `getUser` só devolve o nível BASIC. A
-  pré-seleção de pagamento e as sugestões por comportamento seguem os formatos documentados, mas
-  só foram testadas offline.
-- **Os formatos de resposta de carrinho, pagamento, cupom e pedido não são documentados.** Por isso
-  são lidos de forma tolerante (`app/jsonutil.py`). Toda chamada e resposta MCP aparece no log do
-  servidor, já sem dados pessoais.
-- **Cartões não salvos não são oferecidos**: o `setCartPayment` exige um `cardTokenId`.
-- **Itens vendidos por peso** (ex.: "Tomate Italiano Kg.") não trazem a unidade. O agente assume
-  preço por kg e arredonda para cima.
-- **Não dá para cadastrar endereço pelo chat.** Sem endereço salvo, a pessoa precisa cadastrar um
-  no app do iFood.
-- **As sessões ficam em memória**: recarregar a página mantém a conversa, mas reiniciar o servidor
-  apaga tudo. Elas também não expiram: cada navegador novo cria uma sessão que só some quando o
-  servidor reinicia.
-- **Os itens entram no carrinho com `options: []`**, sem consultar o `getItem` antes.
