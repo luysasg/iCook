@@ -319,7 +319,7 @@ async def test_full_flow_orders_only_after_button(fake):
     assert ifood_fake.tools()[-1] == "getCart"  # the summary always comes from a fresh getCart
     assert s.phase == "checkout"
     summary = out[-1]["data"]
-    assert summary["payment"] == "Visa final 4242 (Crédito)" and summary["voucher"].startswith("BEMVINDO")
+    assert summary["payment"] == "Visa final 4242 (Crédito)" and summary["voucher"] == "R$ 10 de desconto"
     assert {"label": "Total", "value": "R$ 22,21"} in summary["lines"]
     assert "raw" not in summary  # raw MCP payloads stay in the server log
 

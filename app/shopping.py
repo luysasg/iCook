@@ -390,7 +390,7 @@ def parse_vouchers(data: dict[str, Any]) -> list[Voucher]:
             (v for k in ("title", "description", "name", "discountDescription") if isinstance(v := d.get(k), str) and v),
             None,
         )
-        label = f"{code} — {description}" if description else str(code)
+        label = description or "Cupom iFood"
         vouchers.append(Voucher(str(code), str(d["campaignId"]), label))
     return vouchers
 

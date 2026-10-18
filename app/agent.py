@@ -827,7 +827,7 @@ async def choose_voucher(s: Session, index: int | None, from_button: bool = Fals
         return [s.say("Escolha um dos cupons da lista ou siga sem cupom. 🙂", remember=False)]
     voucher = s.vouchers[index] if index is not None else None
     if from_button:
-        s.hear(f"Usar o cupom {voucher.code}" if voucher else "Seguir sem cupom")
+        s.hear(f"Usar o cupom {voucher.label}" if voucher else "Seguir sem cupom")
 
     async def operation() -> list[dict]:
         assert s.cart_id is not None
