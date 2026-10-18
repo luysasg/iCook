@@ -249,7 +249,7 @@ def _disconnected(
 
 def _rate_limited(s: Session) -> dict:
     return s.say(
-        "Recebi muitas mensagens em pouco tempo (limite gratuito do Gemini). Manda de novo em alguns segundos? 🙏",
+        "Recebi muitas mensagens em pouco tempo (limite do modelo de IA gratuito). Manda de novo em alguns segundos? 🙏",
         remember=False,
     )
 
