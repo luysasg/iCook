@@ -8,20 +8,23 @@ search results to ingredients and round quantities up.
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import config, llm, prompts
-from .ifood import IFoodError, IFoodMCP
-from .jsonutil import as_number, brl, dicts_with, first_value, walk
+from .ifood import Caller, IFoodError
+from .jsonutil import as_number, brl, dicts_with, first_value
 
 log = logging.getLogger("shopping")
 
 SEARCH_CONCURRENCY = 4
 CANDIDATES_PER_INGREDIENT = 4
 PICKUP_WORDS = ("PICKUP", "TAKEOUT", "RETIRADA")
-OFFLINE_PAYMENT_WORDS = ("CASH", "DINHEIRO", "OFFLINE", "NA ENTREGA", "VALE")
+OFFLINE_PAYMENT_WORDS = ("CASH", "DINHEIRO", "OFFLINE", "NA ENTREGA")
+CARD_WORDS = ("CARD", "CREDIT", "DEBIT", "CRÉDITO", "CREDITO", "DÉBITO", "DEBITO", "CARTÃO", "CARTAO")
 SUMMARY_SECTIONS = ("summary", "totals", "totalizers", "prices", "values", "amounts")
+ALLERGEN_LABELS = ("compatible", "uncertain", "avoid")
 
 
 @dataclass
@@ -48,6 +51,7 @@ class Pick:
     ingredient: str
     product: Product
     quantity: int
+    allergen: str | None = None  # compatible | uncertain | avoid, only when the user has restrictions
 
     @property
     def total(self) -> float:
@@ -55,6 +59,9 @@ class Pick:
 
     def label(self) -> str:
         return f"{self.quantity}x {self.product.name} — {brl(self.total)}"
+
+    def view(self) -> dict[str, Any]:
+        return {"label": self.label(), "allergen": self.allergen}
 
 
 @dataclass
@@ -91,15 +98,30 @@ class Address:
 
 
 @dataclass
+class PaymentOption:
+    method_id: str
+    card_token: str | None  # only for saved cards
+    label: str
+    offline: bool  # paid on delivery
+
+
+@dataclass
+class Voucher:
+    code: str
+    campaign_id: str
+    label: str
+
+
+@dataclass
 class Checkout:
     cart_id: str
     store: StoreOption
     address: Address
     payment_label: str
-    items: list[str]
+    voucher_label: str | None
+    items: list[dict[str, Any]]  # {quantity, name, price, allergen}
     lines: list[tuple[str, str]]
     warnings: list[str]
-    raw: dict[str, Any]
 
 
 # ---------------------------------------------------------------- address
@@ -160,7 +182,11 @@ def _store_from(merchant: dict[str, Any]) -> StoreOption:
 
 
 async def find_store_options(
-    ifood: IFoodMCP, ingredients: list[Ingredient], location: dict[str, float]
+    ifood: Caller,
+    ingredients: list[Ingredient],
+    location: dict[str, float],
+    restrictions: str | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[list[StoreOption], list[str]]:
     """Returns (store options sorted best-first, ingredients no compared store has)."""
     semaphore = asyncio.Semaphore(SEARCH_CONCURRENCY)
@@ -223,7 +249,9 @@ async def find_store_options(
     for (merchant_id, i), items in zip(gaps, gap_results, strict=True):
         collect(i, [r for r in items if (r.get("merchant") or {}).get("merchantId") == merchant_id])
 
-    picks = await _match_products(ingredients, top, candidates)
+    if progress:
+        progress("Comparando produtos e preços…")
+    picks = await _match_products(ingredients, top, candidates, restrictions)
     for store in top:
         store.picks = picks.get(store.merchant_id, [])
         found = {p.index for p in store.picks}
@@ -236,11 +264,14 @@ async def find_store_options(
 
 
 async def _match_products(
-    ingredients: list[Ingredient], stores: list[StoreOption], candidates: dict[str, dict[int, list[Product]]]
+    ingredients: list[Ingredient],
+    stores: list[StoreOption],
+    candidates: dict[str, dict[int, list[Product]]],
+    restrictions: str | None = None,
 ) -> dict[str, list[Pick]]:
     """One LLM call: pick the right product per ingredient per store and round quantities up."""
     refs: dict[str, tuple[str, int, Product]] = {}
-    lines = ["Ingredientes:"]
+    lines = [f"Restrições alimentares da pessoa: {restrictions or 'nenhuma'}", "", "Ingredientes:"]
     lines += [
         f"{n}. {ing.name} — precisa de {ing.quantity:g} {ing.unit} (busca: {ing.search_term})"
         for n, ing in enumerate(ingredients, 1)
@@ -274,7 +305,10 @@ async def _match_products(
             if any(p.index == index for p in picks[merchant_id]):
                 continue
             quantity = max(1, int(entry.get("quantity") or 1))
-            picks[merchant_id].append(Pick(index, ingredients[index].name, product, quantity))
+            allergen = entry.get("allergen") if restrictions else None
+            if restrictions and allergen not in ALLERGEN_LABELS:
+                allergen = "uncertain"  # never imply a product is safe without a clear signal
+            picks[merchant_id].append(Pick(index, ingredients[index].name, product, quantity, allergen))
     for store_picks in picks.values():
         store_picks.sort(key=lambda p: p.index)
     return picks
@@ -297,63 +331,151 @@ def pick_delivery(data: dict[str, Any]) -> str:
     return str(best["deliveryMethodId"])
 
 
+def _text(d: dict[str, Any]) -> str:
+    return " ".join(str(d.get(k, "")) for k in ("name", "type", "description", "method", "paymentMethodId")).upper()
+
+
 def _payment_label(method: dict[str, Any], parent: dict[str, Any] | None) -> str:
     name = next(
-        (v for v in (method.get("name"), method.get("brand"), (parent or {}).get("name"), method.get("type"))
+        (v for v in (method.get("brand"), method.get("name"), (parent or {}).get("name"), method.get("type"))
          if isinstance(v, str) and v),
-        "forma de pagamento padrão",
+        "forma de pagamento",
     )
     digits = method.get("lastDigits") or method.get("last4") or method.get("lastFourDigits")
-    return f"{name} final {digits}" if digits else name
+    label = f"{name} final {digits}" if digits else name
+    kind = (parent or {}).get("name")
+    return f"{label} ({kind})" if parent and isinstance(kind, str) and kind and kind not in label else label
 
 
-def pick_payment(data: dict[str, Any]) -> tuple[str, str | None, str]:
-    """Returns (paymentMethodId, cardTokenId, label): saved card, then PIX, then any online method."""
-    for d, parent in walk(data):
-        if d.get("cardTokenId"):
-            method_id = d.get("paymentMethodId") or (parent or {}).get("paymentMethodId")
-            if method_id:
-                return str(method_id), str(d["cardTokenId"]), _payment_label(d, parent)
+def parse_payment_options(data: dict[str, Any]) -> list[PaymentOption]:
+    """Every payable option from listPaymentMethods: saved cards (with their token), PIX, on delivery..."""
+    options: list[PaymentOption] = []
+    seen: set[tuple[str, str | None]] = set()
 
-    methods = dicts_with(data, "paymentMethodId")
+    def add(method_id: Any, token: Any, label: str, offline: bool) -> None:
+        key = (str(method_id), str(token) if token else None)
+        if key not in seen:
+            seen.add(key)
+            options.append(PaymentOption(key[0], key[1], label, offline))
 
-    def text(m: dict[str, Any]) -> str:
-        return " ".join(str(m.get(k, "")) for k in ("name", "type", "description", "method")).upper()
+    for method in dicts_with(data, "paymentMethodId"):
+        offline = any(w in _text(method) for w in OFFLINE_PAYMENT_WORDS)
+        if method.get("cardTokenId"):
+            add(method["paymentMethodId"], method["cardTokenId"], _payment_label(method, None), offline)
+            continue
+        cards = [c for c in dicts_with(method, "cardTokenId") if c is not method and not c.get("paymentMethodId")]
+        for card in cards:
+            if card.get("cardTokenId"):
+                add(method["paymentMethodId"], card["cardTokenId"], _payment_label(card, method), offline)
+        # A card method with no saved card can't be paid here (setCartPayment needs a cardTokenId).
+        if not cards and not any(w in _text(method) for w in CARD_WORDS):
+            add(method["paymentMethodId"], None, _payment_label(method, None), offline)
+    # Saved cards first, then PIX and other online methods, pay-on-delivery last.
+    options.sort(key=lambda o: (o.offline, o.card_token is None, "PIX" not in o.label.upper()))
+    return options
 
-    online = [m for m in methods if not any(w in text(m) for w in OFFLINE_PAYMENT_WORDS)]
-    pix = [m for m in online if "PIX" in text(m)]
-    choices = pix or online or methods
-    if not choices:
-        raise IFoodError("listPaymentMethods", "nenhuma forma de pagamento disponível")
-    return str(choices[0]["paymentMethodId"]), None, _payment_label(choices[0], None)
+
+def parse_vouchers(data: dict[str, Any]) -> list[Voucher]:
+    vouchers = []
+    for d in dicts_with(data, "campaignId"):
+        code = d.get("code") or d.get("voucherCode")
+        if not code or not d.get("campaignId"):
+            continue
+        description = next(
+            (v for k in ("title", "description", "name", "discountDescription") if isinstance(v := d.get(k), str) and v),
+            None,
+        )
+        label = f"{code} — {description}" if description else str(code)
+        vouchers.append(Voucher(str(code), str(d["campaignId"]), label))
+    return vouchers
 
 
-async def build_cart(ifood: IFoodMCP, store: StoreOption, address: Address) -> Checkout:
-    items = [{"itemId": p.product.item_id, "quantity": p.quantity} for p in store.picks]
-    cart = await ifood.call(
-        "createCart", {"merchantId": store.merchant_id, "addressId": address.address_id, "items": items}
-    )
-    cart_id = first_value(cart, "cartId") or first_value(cart, "id")
-    if not cart_id:
-        raise IFoodError("createCart", "a resposta não trouxe o cartId")
-    cart_id = str(cart_id)
+def _cart_id(data: dict[str, Any]) -> str | None:
+    value = first_value(data, "cartId") or first_value(data, "id")
+    return str(value) if value else None
+
+
+async def _sync_items(ifood: Caller, cart_id: str, wanted: dict[str, int], cart: dict[str, Any]) -> None:
+    """Brings an existing cart to the wanted {itemId: quantity} instead of creating a new one."""
+    current = {str(line.get("itemId")): line for line in dicts_with(cart, "cartItemId")}
+    for item_id, quantity in wanted.items():
+        line = current.get(item_id)
+        if line is None:
+            await ifood.call(
+                "addItemToCart", {"cartId": cart_id, "itemId": item_id, "quantity": quantity, "options": []}
+            )
+        elif int(as_number(line.get("quantity")) or 0) != quantity:  # counts may come as strings
+            await ifood.call(
+                "updateCartItem",
+                {"cartId": cart_id, "cartItemId": str(line["cartItemId"]), "itemId": item_id, "quantity": quantity,
+                 "options": []},
+            )
+    for item_id, line in current.items():
+        if item_id not in wanted:
+            await ifood.call("removeItemFromCart", {"cartId": cart_id, "cartItemId": str(line["cartItemId"])})
+
+
+async def prepare_cart(ifood: Caller, store: StoreOption, address: Address, existing_cart_id: str | None) -> str:
+    """Creates the cart (or resumes the one this store already has) and sets ASAP delivery."""
+    wanted = {p.product.item_id: p.quantity for p in store.picks}
+    if existing_cart_id:
+        cart_id = existing_cart_id
+        await _sync_items(ifood, cart_id, wanted, await ifood.call("getCart", {"cartId": cart_id}))
+    else:
+        # Grocery items have no options; the field is still required ([] = none).
+        items = [{"itemId": item_id, "quantity": q, "options": []} for item_id, q in wanted.items()]
+        cart = await ifood.call(
+            "createCart", {"merchantId": store.merchant_id, "addressId": address.address_id, "items": items}
+        )
+        cart_id = _cart_id(cart)
+        if not cart_id:
+            raise IFoodError("createCart", "a resposta não trouxe o cartId")
 
     methods = await ifood.call("getCartDeliveryMethods", {"cartId": cart_id})
     await ifood.call("setCartDelivery", {"cartId": cart_id, "deliveryMethodId": pick_delivery(methods)})
+    return cart_id
 
-    payments = await ifood.call("listPaymentMethods", {"merchantId": store.merchant_id})
-    method_id, card_token, payment_label = pick_payment(payments)
-    payment_args = {"cartId": cart_id, "paymentMethodId": method_id}
-    if card_token:
-        payment_args["cardTokenId"] = card_token
-    await ifood.call("setCartPayment", payment_args)
 
-    final = await ifood.call("getCart", {"cartId": cart_id})
-    return _summarize(cart_id, store, address, payment_label, final)
+async def list_payments(ifood: Caller, merchant_id: str) -> list[PaymentOption]:
+    return parse_payment_options(await ifood.call("listPaymentMethods", {"merchantId": merchant_id}))
+
+
+async def set_payment(ifood: Caller, cart_id: str, option: PaymentOption) -> None:
+    args = {"cartId": cart_id, "paymentMethodId": option.method_id}
+    if option.card_token:
+        args["cardTokenId"] = option.card_token
+    await ifood.call("setCartPayment", args)
+
+
+async def list_vouchers(ifood: Caller, cart_id: str) -> list[Voucher]:
+    """Optional step: a failure here just means no coupon is offered."""
+    try:
+        return parse_vouchers(await ifood.call("listVouchers", {"cartId": cart_id}))
+    except IFoodError as e:
+        log.warning("listVouchers failed: %s", e)
+        return []
+
+
+async def set_voucher(ifood: Caller, cart_id: str, voucher: Voucher) -> None:
+    await ifood.call("setVoucher", {"cartId": cart_id, "code": voucher.code, "campaignId": voucher.campaign_id})
+
+
+async def review(
+    ifood: Caller, cart_id: str, store: StoreOption, address: Address, payment_label: str, voucher_label: str | None
+) -> Checkout:
+    cart = await ifood.call("getCart", {"cartId": cart_id})
+    # The raw payload stays in the server log; the UI only gets the clean summary.
+    log.info("getCart payload for %s: %s", cart_id, json.dumps(cart, ensure_ascii=False))
+    return _summarize(cart_id, store, address, payment_label, voucher_label, cart)
 
 
 def _summarize(
-    cart_id: str, store: StoreOption, address: Address, payment_label: str, cart: dict[str, Any]
+    cart_id: str,
+    store: StoreOption,
+    address: Address,
+    payment_label: str,
+    voucher_label: str | None,
+    cart: dict[str, Any],
 ) -> Checkout:
     section = next((cart[k] for k in SUMMARY_SECTIONS if isinstance(cart.get(k), dict)), cart)
 
@@ -363,14 +485,21 @@ def _summarize(
             value = as_number(first_value(cart, *keys))
         return value
 
-    names = {p.product.item_id: p.product.name for p in store.picks}
+    picks = {p.product.item_id: p for p in store.picks}
     items = []
     for line in dicts_with(cart, "cartItemId"):
-        name = first_value(line, "name", "itemName", "description") or names.get(line.get("itemId"), "Item")
+        pick = picks.get(str(line.get("itemId")))
+        name = first_value(line, "name", "itemName", "description") or (pick.product.name if pick else "Item")
         price = as_number(first_value(line, "totalPrice", "total", "price", "unitPrice"))
-        items.append(f"{line.get('quantity', 1)}x {name} — {brl(price)}")
+        quantity = int(as_number(line.get("quantity")) or 1)
+        items.append(
+            {"quantity": quantity, "name": str(name), "price": brl(price), "allergen": pick.allergen if pick else None}
+        )
     if not items:
-        items = [p.label() for p in store.picks]
+        items = [
+            {"quantity": p.quantity, "name": p.product.name, "price": brl(p.total), "allergen": p.allergen}
+            for p in store.picks
+        ]
 
     lines = []
     for label, keys in (
@@ -390,4 +519,4 @@ def _summarize(
     for w in raw_warnings if isinstance(raw_warnings, list) else []:
         warnings.append(w if isinstance(w, str) else str(first_value(w, "message", "description") or json.dumps(w)))
 
-    return Checkout(cart_id, store, address, payment_label, items, lines, warnings, cart)
+    return Checkout(cart_id, store, address, payment_label, voucher_label, items, lines, warnings)

@@ -37,3 +37,6 @@ GEMINI_TIMEOUT = float(os.getenv("GEMINI_TIMEOUT", "25"))
 
 # How many grocery stores to compare side by side.
 MAX_STORES = int(os.getenv("MAX_STORES", "3"))
+
+# Demo mode: the whole checkout runs against iFood except the final submitOrder.
+DRY_RUN = os.getenv("DRY_RUN", "").strip().lower() in ("1", "true", "yes", "on")

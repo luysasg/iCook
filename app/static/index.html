@@ -2,7 +2,8 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
   <title>Bateu a Vontade</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -10,29 +11,38 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <span class="logo">🍳</span>
+        <span class="brand-mark" aria-hidden="true">BV</span>
         <div>
           <h1>Bateu a Vontade</h1>
-          <p>da vontade ao pedido de mercado</p>
+          <p class="brand-sub">da vontade ao pedido de mercado</p>
         </div>
       </div>
       <div class="actions">
-        <a id="connect" class="pill pill-cta" href="/login" hidden>Conectar iFood</a>
-        <span id="connected" class="pill pill-ok" hidden>● iFood conectado</span>
-        <button id="reset" class="pill pill-ghost" type="button">Nova conversa</button>
+        <span id="demo" class="pill pill-demo" hidden title="DRY_RUN: tudo roda, menos o envio final do pedido">Demonstração</span>
+        <button id="connect" class="btn btn-primary btn-small" type="button" hidden>Conectar iFood</button>
+        <span id="connected" class="pill pill-ok" hidden><span class="dot" aria-hidden="true"></span>Conectado</span>
+        <button id="reset" class="btn btn-ghost btn-small" type="button" aria-label="Começar uma nova conversa">Nova conversa</button>
       </div>
     </header>
 
-    <main id="chat" class="chat" aria-live="polite"></main>
+    <main id="chat" class="chat" role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversa"></main>
+
+    <div id="auth-banner" class="auth-banner" role="status" hidden></div>
 
     <form id="composer" class="composer" autocomplete="off">
-      <input id="input" type="text" placeholder="Ex.: quero fazer um strogonoff pra 4 pessoas" maxlength="2000">
-      <button id="send" type="submit" aria-label="Enviar">➤</button>
+      <label for="input" class="sr-only">Mensagem</label>
+      <input id="input" type="text" placeholder="Escreva sua mensagem" maxlength="2000" enterkeyhint="send">
+      <button id="send" class="send" type="submit" aria-label="Enviar mensagem">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z"/></svg>
+      </button>
     </form>
   </div>
 
   <template id="typing-template">
-    <div class="msg bot typing"><div class="bubble"><span></span><span></span><span></span><em class="typing-label"></em></div></div>
+    <div class="msg bot typing" aria-label="O assistente está trabalhando">
+      <div class="bubble"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
+      <div class="status-line" role="status"></div>
+    </div>
   </template>
 
   <script src="/static/app.js"></script>

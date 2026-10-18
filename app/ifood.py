@@ -4,7 +4,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Protocol
 
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
@@ -24,6 +24,12 @@ class IFoodError(Exception):
         super().__init__(f"{tool}: {message}")
         self.tool = tool
         self.message = message
+
+
+class Caller(Protocol):
+    """Anything that calls MCP tools: the real client or the guarded wrapper (app.guard)."""
+
+    async def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class IFoodMCP:

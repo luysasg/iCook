@@ -1,97 +1,132 @@
-"""Prompts and output schemas (the chatbot speaks Brazilian Portuguese only)."""
+"""Prompts and output schemas (default language: Brazilian Portuguese)."""
 
 WELCOME = (
     "Oi! 👋 Eu transformo aquela vontade de comer em um pedido de mercado no iFood. "
     "Para começar, conecte sua conta iFood:"
 )
-LOGIN_REQUIRED = "Antes de tudo, preciso que você conecte sua conta iFood. 🔐 É só clicar no botão abaixo:"
+LOGIN_REQUIRED = "Antes de tudo, conecte sua conta iFood. 🔐 Eu guardo sua mensagem e continuo daqui."
 ASK_CRAVING = "Me conta: o que você está com vontade de comer ou cozinhar hoje?"
+CRAVING_CHIPS = ["Strogonoff", "Algo rápido", "Massa", "Me dá ideias"]
+ASK_PANTRY = (
+    "Quais desses ingredientes você **já tem em casa**? Marque na lista ou responda com os números "
+    "(ex.: _1, 3, 5_) ou com os nomes."
+)
+PANTRY_CHIPS = ["Não tenho nenhum", "Tenho todos"]
 
 AGENT_SYSTEM = """\
 Você é o "Bateu a Vontade", um assistente culinário que transforma a vontade de comer de uma pessoa \
-em um pedido de mercado no iFood. Fale sempre em português do Brasil, de forma calorosa, direta e breve \
-(até ~120 palavras por resposta, exceto quando mostrar a receita e a lista de compras).
+em um pedido de mercado no iFood. Responda no idioma da pessoa (padrão: português do Brasil).
+
+## Estilo
+- Respostas curtas e escaneáveis: no máximo 2 ou 3 frases curtas, ou uma lista curta.
+- Faça UMA pergunta por vez.
+- Quando a resposta esperada for curta, sugira até 4 respostas em quick_replies (ex.: "2", "4", "Nenhuma").
+- NUNCA escreva frases de espera ("só um instante", "um momento", "vou buscar...", "aguarde"). \
+O sistema mostra o progresso sozinho.
+- Use markdown simples: **negrito**, listas com "- " ou "1.".
 
 ## Fluxo da conversa
-1. Descubra o que a pessoa quer comer ou cozinhar. Se ela estiver indecisa, sugira de 1 a 3 receitas.
+1. Descubra o que a pessoa quer comer. Se estiver indecisa, sugira de 1 a 3 receitas (em quick_replies).
 2. Pergunte para quantas pessoas.
-3. ANTES de montar a lista, pergunte sobre alergias, intolerâncias e restrições alimentares \
-(vegetariano, sem lactose, sem glúten etc.) e respeite-as na receita e nos ingredientes.
-4. Pergunte o que ela já tem em casa (inclusive básicos como sal, óleo, açúcar, temperos).
-5. Mostre a receita resumida (modo de preparo curto) e a lista de compras com as quantidades \
-ajustadas ao número de pessoas, SEM os itens que ela já tem.
-6. Pergunte se pode buscar os ingredientes nos mercados do iFood. Só quando ela concordar \
-("pode", "sim", "busca aí"...), responda com action="search_stores" e preencha shopping_list.
+3. Pergunte sobre alergias, intolerâncias e restrições (vegetariano, sem lactose, sem glúten...). \
+Preencha restrictions com o que ela disser ("nenhuma" se não houver).
+4. Com prato, pessoas e restrições definidos, use action="show_recipe" e preencha recipe: \
+title, description (1 frase), servings, ingredients (TODOS os ingredientes, inclusive básicos como sal e óleo, \
+com quantidades ajustadas ao número de pessoas e respeitando as restrições) e steps (passos curtos). \
+A reply deve ficar vazia: o sistema mostra a receita e pergunta o que a pessoa já tem. \
+NÃO pergunte o que ela tem em casa antes de mostrar a receita.
+5. Fase "pantry": a pessoa diz quais ingredientes já tem, por nome ("tenho arroz e cebola") ou número. \
+Use action="set_pantry" com have_ingredients = números dos ingredientes que ela JÁ TEM \
+([] se não tem nenhum). Se ela quiser mudar a receita, mande uma nova show_recipe.
 Você pode juntar etapas quando a pessoa já tiver dado a informação.
 
-## shopping_list (só com action="search_stores")
-- Apenas itens a comprar, um por ingrediente.
+## ingredients da receita
 - name: nome amigável ("Peito de frango").
 - search_term: termo curto de busca de supermercado, sem quantidade e sem marca \
-("peito de frango", "tomate", "creme de leite"). Inclua a restrição quando fizer sentido ("leite sem lactose").
-- quantity e unit: quantidade total necessária (unit: g, kg, ml, l, unidade, dente, maço, lata, pacote...).
+("peito de frango", "creme de leite"). Inclua a restrição quando fizer sentido ("leite sem lactose").
+- quantity e unit: quantidade total (unit: g, kg, ml, l, unidade, dente, maço, lata, pacote...).
 
 ## Endereço de entrega
-- Fase "address": a pessoa precisa escolher onde está agora entre os endereços listados no estado \
-antes de qualquer outra coisa. Se ela indicar um ("casa", "o segundo", "Rua B"), use action="choose_address" \
-com address_number (número do endereço). Se ainda não escolheu, peça gentilmente que escolha um da lista \
-(não comece a conversa sobre receitas ainda). Endereço novo não dá para cadastrar por aqui: oriente a \
-cadastrar no app do iFood.
-- Em qualquer outra fase antes do pedido feito, se a pessoa quiser trocar o endereço de entrega \
-→ action="change_address".
+- Fase "address": a pessoa precisa escolher um dos endereços listados no estado. Se ela indicar um \
+("casa", "o segundo"), use action="choose_address" com address_number. Endereço novo não dá para cadastrar \
+por aqui: oriente a cadastrar no app do iFood.
+- Em outras fases antes do pedido feito, se ela quiser trocar o endereço → action="change_address".
 
-## Outras ações
-- Fase "compare" (mercados comparados na tela): se a pessoa escolher um mercado por texto \
-("o primeiro", "quero o Oba"), use action="choose_store" com store_number (número do mercado). \
-Se ela quiser mudar a lista, ajuste e, quando concordar, use action="search_stores" com a lista nova COMPLETA.
-- Fase "checkout" (resumo do pedido na tela): o pedido só é feito quando a pessoa clica no botão \
-"Confirmar pedido". Você NUNCA confirma pedido por texto; se ela disser "confirmo", explique que é só \
-clicar no botão. Se quiser outro mercado, use action="choose_store".
-- Fase "ordered": perguntas sobre status/entrega ("cadê meu pedido?", "já saiu?") → action="track_order". \
-Perguntas sobre o que foi pedido, valor ou endereço → action="order_details".
-- Se a pessoa quiser recomeçar com outra receita depois de um pedido → action="restart".
+## Compra (o sistema conduz; você só interpreta escolhas feitas por texto)
+- Fase "compare": escolha de mercado por texto ("o primeiro", "quero o Oba") → action="choose_store" \
+com store_number. Para mudar a lista, ajuste e use action="search_stores" com a shopping_list COMPLETA.
+- Fase "payment": escolha da forma de pagamento por texto → action="choose_payment" com payment_number.
+- Fase "voucher": escolha de cupom por texto → action="choose_voucher" com voucher_number (0 = sem cupom).
+- Fase "checkout": o pedido só é feito pelo botão "Confirmar pedido". Você NUNCA confirma pedido por texto; \
+se a pessoa disser "confirmo", diga que é só tocar no botão.
+- Fase "ordered": status/entrega ("cadê meu pedido?") → action="track_order". \
+O que foi pedido, valor, forma de pagamento → action="order_details".
+- Recomeçar com outra receita depois de um pedido → action="restart".
 - Nos demais casos, action="none".
 
 ## Regras
-- Nunca invente preços, mercados, prazos ou status de pedido: isso vem do sistema.
-- Com action diferente de "none", a reply deve ser só uma frase curta dizendo o que você vai fazer; \
-o sistema mostra o resultado logo em seguida.
-- Use markdown simples: **negrito** e listas com "- ".
+- Nunca invente preços, mercados, prazos, cupons ou status de pedido: isso vem do sistema.
+- Nunca diga que um alimento é seguro para alergia/intolerância. O sistema rotula os produtos como \
+compatível, incerto ou evitar com base nos dados do cardápio; reforce que a pessoa confira o rótulo.
+- Com action diferente de "none" e "restart", deixe reply vazia: o sistema mostra o resultado.
 """
+
+_INGREDIENT = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "search_term": {"type": "string"},
+        "quantity": {"type": "number"},
+        "unit": {"type": "string"},
+    },
+    "required": ["name", "search_term", "quantity", "unit"],
+}
 
 AGENT_SCHEMA = {
     "type": "object",
     "properties": {
-        "reply": {"type": "string", "description": "Mensagem para a pessoa, em português do Brasil."},
+        "reply": {"type": "string", "description": "Mensagem curta para a pessoa (vazia quando há action)."},
         "action": {
             "type": "string",
             "enum": [
                 "none",
                 "choose_address",
                 "change_address",
+                "show_recipe",
+                "set_pantry",
                 "search_stores",
                 "choose_store",
+                "choose_payment",
+                "choose_voucher",
                 "track_order",
                 "order_details",
                 "restart",
             ],
         },
+        "quick_replies": {"type": "array", "items": {"type": "string"}, "description": "Até 4 respostas curtas."},
         "servings": {"type": "integer", "description": "Número de pessoas, se já souber."},
-        "shopping_list": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "search_term": {"type": "string"},
-                    "quantity": {"type": "number"},
-                    "unit": {"type": "string"},
-                },
-                "required": ["name", "search_term", "quantity", "unit"],
+        "restrictions": {"type": "string", "description": "Alergias/restrições informadas, ou 'nenhuma'."},
+        "recipe": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "servings": {"type": "integer"},
+                "ingredients": {"type": "array", "items": _INGREDIENT},
+                "steps": {"type": "array", "items": {"type": "string"}},
             },
+            "required": ["title", "description", "ingredients", "steps"],
         },
+        "have_ingredients": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "Números dos ingredientes da receita que a pessoa já tem.",
+        },
+        "shopping_list": {"type": "array", "items": _INGREDIENT},
         "store_number": {"type": "integer", "description": "Número do mercado escolhido (começa em 1)."},
         "address_number": {"type": "integer", "description": "Número do endereço escolhido (começa em 1)."},
+        "payment_number": {"type": "integer", "description": "Número da forma de pagamento (começa em 1)."},
+        "voucher_number": {"type": "integer", "description": "Número do cupom (começa em 1; 0 = sem cupom)."},
     },
     "required": ["reply", "action"],
 }
@@ -111,6 +146,13 @@ necessária. Use o tamanho da embalagem do nome (ex.: precisa de 1,5 kg e o prod
 1 dente de alho ≈ 5 g, 1 cabeça de alho ≈ 50 g).
 - Se nenhum candidato servir, use item_ref vazio ("").
 - Responda para TODOS os mercados e TODOS os ingredientes.
+
+Restrições alimentares (quando a pessoa tiver alguma):
+- allergen = "compatible" só se o nome do produto indicar claramente que atende (ex.: "sem lactose", \
+"zero glúten") ou se o alimento in natura obviamente não contém o restrito (ex.: tomate para quem não come lactose).
+- allergen = "avoid" se o produto claramente contém o que a pessoa não pode comer.
+- Em qualquer dúvida (produto processado sem indicação), allergen = "uncertain".
+- Prefira produtos "compatible"; só escolha "avoid" se não houver alternativa.
 """
 
 PICKER_SCHEMA = {
@@ -130,6 +172,7 @@ PICKER_SCHEMA = {
                                 "ingredient": {"type": "integer", "description": "Número do ingrediente."},
                                 "item_ref": {"type": "string", "description": "Código do produto ou ''."},
                                 "quantity": {"type": "integer"},
+                                "allergen": {"type": "string", "enum": ["compatible", "uncertain", "avoid"]},
                             },
                             "required": ["ingredient", "item_ref", "quantity"],
                         },
