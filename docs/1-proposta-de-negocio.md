@@ -2,6 +2,8 @@
 
 ## O problema
 
+### Para quem já é cliente do iFood
+
 "Bateu a vontade de comer um estrogonofe" é diferente de "preciso comprar creme de leite, 600 g de
 frango, champignon e cebola". Entre a vontade e o pedido de mercado existe um trabalho manual
 que quase ninguém gosta de fazer:
@@ -14,6 +16,10 @@ que quase ninguém gosta de fazer:
 
 Na prática, muita gente desiste no meio do caminho, pede comida pronta ou faz o pedido de mercado
 incompleto e precisa de um segundo pedido.
+
+### Para quem não é cliente do iFood
+
+Para os idosos, a barreira é ainda maior. Muitos usam o WhatsApp no dia a dia, mas acham os apps de mercado confusos: navegar por categorias, buscar item por item e montar o carrinho exige uma familiaridade que eles não têm. Sem conseguir pedir pelo app, acabam indo ao supermercado físico, mesmo quando carregar as compras é difícil. Para o iFood, são clientes perdidos para o supermercado físico.
 
 ## Para quem
 
