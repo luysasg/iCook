@@ -17,10 +17,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import auth, config, ifood, llm, prompts, shopping, tracking, user, views
+from . import auth, config, ifood, llm, pix, prompts, shopping, tracking, user, views
 from .guard import Guard, GuardedClient
 from .ifood import IFoodError
-from .jsonutil import brl, first_value
+from .jsonutil import as_number, brl, first_value
 from .recipe import (
     Recipe,
     parse_ingredients,
@@ -112,6 +112,7 @@ class Session:
     checkout: shopping.Checkout | None = None
     order_id: str | None = None
     short_code: str | None = None
+    pix_shown: bool = False  # the Pix QR card of this order is on screen
     dry_run_step: int = 0
     guard: Guard = field(default_factory=Guard)
     # From getUser, once per session (kept on "Nova conversa"); None = not loaded or failed.
@@ -146,6 +147,7 @@ class Session:
         self.clear_cart()
         self.order_id = None
         self.short_code = None
+        self.pix_shown = False
         self.dry_run_step = 0
 
     def clear_cart(self) -> None:
@@ -853,6 +855,8 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
                 data={"order_id": s.order_id, "short_code": s.short_code, "dry_run": True},
             )
         ]
+        if s.payment and "PIX" in s.payment.label.upper():
+            out += _pix_card(s, pix.simulated_code(as_number(_checkout_total(s))), dry_run=True)
         return out + [s.say("", kind="tracker", data=_simulated_track(s), remember=False)]
 
     async def operation() -> list[dict]:
@@ -883,9 +887,10 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
             if s.short_code:
                 text += f" Código: **{s.short_code}**."
             out = [s.say(text, kind="order", data={"order_id": s.order_id, "short_code": s.short_code})]
-            tracker = tracking.tracker_view(
-                s.order_id, s.short_code, await client.call("trackOrder", {"orderId": s.order_id})
-            )
+            track = await client.call("trackOrder", {"orderId": s.order_id})
+            if code := pix.find_code(result) or pix.find_code(track):
+                out += _pix_card(s, code)
+            tracker = tracking.tracker_view(s.order_id, s.short_code, track)
             out.append(s.say("", kind="tracker", data=tracker, remember=False))
             return out
 
@@ -894,6 +899,25 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
         operation,
         "Não consegui finalizar o pedido. Antes de tentar de novo, confira no app do iFood se ele não foi criado.",
     )
+
+
+def _checkout_total(s: Session) -> str | None:
+    return next((value for label, value in s.checkout.lines if label.startswith("Total")), None) if s.checkout else None
+
+
+def _pix_card(s: Session, code: str, dry_run: bool = False) -> list[dict]:
+    """Once per order: the QR code and a copy button instead of the raw code (kept out of the LLM history)."""
+    if s.pix_shown:
+        return []
+    s.pix_shown = True
+    return [
+        s.say(
+            "Para pagar com Pix, escaneie o QR code no app do seu banco ou copie o código e use o **Pix Copia e Cola**.",
+            kind="pix",
+            data=pix.card_view(code, _checkout_total(s), dry_run),
+            history_text="[Mostrei o QR code e o código Pix para o pagamento do pedido.]",
+        )
+    ]
 
 
 def _simulated_track(s: Session) -> dict[str, Any]:
@@ -917,7 +941,8 @@ async def track_order(s: Session, refresh: bool = False) -> list[dict]:
     async def operation() -> list[dict]:
         async with _ifood(s) as client:
             data = await client.call("trackOrder", {"orderId": s.order_id})
-        return show(tracking.tracker_view(s.order_id, s.short_code, data))
+        code = pix.find_code(data)
+        return (_pix_card(s, code) if code else []) + show(tracking.tracker_view(s.order_id, s.short_code, data))
 
     return await _run(s, operation, "Não consegui consultar o status do pedido agora.")
 
@@ -943,6 +968,7 @@ async def order_details(s: Session) -> list[dict]:
             lines.append(f"**Entrega:** {delivery['address']}")
         if delivery.get("verificationCode"):
             lines.append(f"**Código de entrega:** {delivery['verificationCode']}")
-        return [s.say("\n".join(lines))]
+        code = pix.find_code(data)
+        return (_pix_card(s, code) if code else []) + [s.say(pix.without_code("\n".join(lines)))]
 
     return await _run(s, operation, "Não consegui consultar os detalhes do pedido agora.")

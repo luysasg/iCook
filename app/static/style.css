@@ -282,6 +282,11 @@ details[open] > summary { margin-bottom: 8px; }
 .tracker.cancelled .tracker-steps { opacity: 0.4; }
 .status-box { background: var(--bg); border-radius: var(--radius-sm); padding: 12px 14px; color: var(--strong); font-weight: 600; }
 
+/* pix payment */
+.pix { max-width: 360px; align-items: stretch; }
+.pix .price { text-align: center; }
+.pix-qr { display: block; width: 100%; max-width: 240px; margin: 0 auto; aspect-ratio: 1; image-rendering: pixelated; }
+
 /* ---------- auth banner + composer ---------- */
 .auth-banner {
   margin: 0 16px 8px;

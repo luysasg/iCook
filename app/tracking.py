@@ -3,6 +3,8 @@
 import re
 from typing import Any
 
+from . import pix
+
 # Progress steps of the tracker card. The status text itself is shown verbatim from trackOrder.
 ORDER_STEPS = ["Recebido", "Confirmado", "Em preparo", "A caminho", "Entregue"]
 STEP_OF_CODE = {
@@ -47,7 +49,9 @@ def tracker_view(order_id: str | None, short_code: str | None, data: dict[str, A
         "order_id": order_id,
         "short_code": short_code,
         "code": code,
-        "description": status.get("description") or "Aguardando a primeira atualização do iFood.",
+        # A Pix code in the status goes to its own QR card, not into this text.
+        "description": pix.without_code(str(status.get("description") or ""))
+        or "Aguardando a primeira atualização do iFood.",
         "steps": ORDER_STEPS,
         "step": STEP_OF_CODE.get(code, 0),
         "cancelled": code == "CANCELLED",

@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app import agent, auth, config, ifood, llm, prompts, recipe, shopping, user
+from app import agent, auth, config, ifood, llm, pix, prompts, recipe, shopping, user
 from app.guard import Guard, GuardError
 from app.ifood import IFoodError
 from app.jsonutil import as_number
@@ -401,6 +401,7 @@ async def test_dry_run_never_submits(fake, monkeypatch):
 
     out = await agent.confirm_order(s)
     assert s.phase == "ordered" and "submitOrder" not in ifood_fake.tools()
+    assert out[1]["kind"] == "pix" and out[1]["data"]["dry_run"] is True  # paid with Pix: simulated QR card
     assert out[-1]["kind"] == "tracker" and out[-1]["data"]["dry_run"] is True
     first = out[-1]["data"]["code"]
     out = await agent.track_order(s, refresh=True)
@@ -408,6 +409,36 @@ async def test_dry_run_never_submits(fake, monkeypatch):
     # Even a direct call is blocked by the guard.
     with pytest.raises(GuardError):
         s.guard.check("submitOrder", {"cartId": "cart-1", "userConsent": True})
+
+
+# The Banco Central's BR Code example (static Pix, CRC 1D3D).
+PIX_CODE = (
+    "00020126580014br.gov.bcb.pix0136123e4567-e12b-12d1-a456-426655440000"
+    "5204000053039865802BR5913Fulano de Tal6008BRASILIA62070503***63041D3D"
+)
+
+
+def test_pix_code_is_found_by_its_checksum():
+    assert pix.code_in(f"Pague com Pix: {PIX_CODE} (expira em 30 min)") == PIX_CODE
+    assert pix.code_in(PIX_CODE[:-1] + "0") is None  # wrong CRC
+    assert pix.find_code({"payment": [{"anything": PIX_CODE}]}) == PIX_CODE
+    assert pix.without_code(f"Pague com Pix: {PIX_CODE}") == "Pague com Pix:"
+    assert pix.code_in(pix.simulated_code(22.21))
+
+
+async def test_pix_order_shows_a_qr_card_instead_of_the_code(fake):
+    ifood_fake, scripted = fake
+    ifood_fake.submit_result = {"orderId": "order-1", "payment": {"pixCopyPaste": PIX_CODE}}
+    s = connected_session()
+    await to_summary(s, scripted)
+    out = await agent.confirm_order(s)
+    assert [m["kind"] for m in out] == ["order", "pix", "tracker"]
+    card = out[1]["data"]
+    assert card["code"] == PIX_CODE and card["total"] == "R$ 22,21"
+    assert card["qr"].startswith("data:image/svg+xml")
+    assert all(PIX_CODE not in m["text"] for m in s.history)  # the LLM never sees it
+    await agent.track_order(s)
+    assert sum(m["kind"] == "pix" for m in s.messages) == 1  # once per order
 
 
 async def test_store_below_minimum_asks_to_add_items(fake):

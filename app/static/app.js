@@ -295,6 +295,37 @@ function trackerCard(data) {
       : `Atualizado às ${updated} · acompanhamento encerrado`));
 }
 
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Clipboard API unavailable (non-secure context, old browser): the selection trick still works.
+    const area = h("textarea", { readonly: true, class: "sr-only" }, text);
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  }
+}
+
+function pixCard(data) {
+  const label = "Copiar código Pix";
+  const button = h("button", { type: "button", class: "btn btn-primary btn-block", onclick: async () => {
+    const ok = await copyText(data.code);
+    button.textContent = ok ? "Código copiado ✓" : "Não consegui copiar";
+    setTimeout(() => { button.textContent = label; }, 2500);
+  } }, label);
+  return h("article", { class: "card pix", "aria-label": "Pagamento Pix" },
+    h("div", { class: "store-head" },
+      h("h3", null, "Pague com Pix"),
+      data.dry_run ? h("span", { class: "tag tag-unsure" }, "Simulação") : null),
+    data.total ? h("div", { class: "price" }, data.total) : null,
+    h("img", { class: "pix-qr", src: data.qr, alt: "QR code do Pix" }),
+    button);
+}
+
 function renderMessage(message) {
   const row = h("div", { class: `msg ${message.role}`, "data-id": message.id, "data-kind": message.kind });
   const data = message.data || {};
@@ -323,6 +354,9 @@ function renderMessage(message) {
       break;
     case "tracker":
       row.append(trackerCard(data));
+      break;
+    case "pix":
+      row.append(bubble(message.text), pixCard(data));
       break;
     case "order":
       row.classList.add("order");
