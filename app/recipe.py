@@ -51,7 +51,7 @@ def parse_ingredients(raw: Any) -> list[Ingredient]:
                     unit=str(entry.get("unit") or "unidade").strip(),
                 )
             )
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             log.warning("ignoring malformed list entry: %r", entry)
     return items
 

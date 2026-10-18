@@ -24,7 +24,12 @@ from .shopping import parse_payment_options, parse_vouchers
 log = logging.getLogger("guard")
 
 MUTATIONS = {
-    "addItemToCart", "updateCartItem", "removeItemFromCart", "setCartDelivery", "setCartPayment", "setVoucher",
+    "addItemToCart",
+    "updateCartItem",
+    "removeItemFromCart",
+    "setCartDelivery",
+    "setCartPayment",
+    "setVoucher",
     "removeVoucher",
 }
 
@@ -57,9 +62,7 @@ class Guard:
 
     def cart_for(self, merchant_id: str) -> str | None:
         """The open cart for this merchant, if any (to resume instead of recreating)."""
-        return next(
-            (c.cart_id for c in self.carts.values() if c.merchant_id == merchant_id and not c.submitted), None
-        )
+        return next((c.cart_id for c in self.carts.values() if c.merchant_id == merchant_id and not c.submitted), None)
 
     def drop(self, cart_id: str) -> None:
         """Forget a cart iFood no longer knows (expired)."""

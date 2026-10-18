@@ -16,8 +16,22 @@ log = logging.getLogger("ifood")
 
 # Personal data never reaches the server log (getUser, payment methods, documents).
 PRIVATE_KEYS = {
-    "fullname", "firstname", "lastname", "email", "phone", "phonenumber", "taxpayeridentificationnumber",
-    "document", "cpf", "cnpj", "userid", "customerid", "cardtokenid", "lastdigits", "last4", "lastfourdigits",
+    "fullname",
+    "firstname",
+    "lastname",
+    "email",
+    "phone",
+    "phonenumber",
+    "taxpayeridentificationnumber",
+    "document",
+    "cpf",
+    "cnpj",
+    "userid",
+    "customerid",
+    "cardtokenid",
+    "lastdigits",
+    "last4",
+    "lastfourdigits",
     "userbehaviordescription",
 }
 
@@ -63,7 +77,9 @@ class IFoodMCP:
                 data = {"text": text}
         log.info("← %s %s", tool, json.dumps(redact(data), ensure_ascii=False)[:3000])
         error = data.get("error") if isinstance(data, dict) else None
-        if "AUTHENTICATION_REQUIRED" in text or (isinstance(error, dict) and error.get("code") == "AUTHENTICATION_REQUIRED"):
+        if "AUTHENTICATION_REQUIRED" in text or (
+            isinstance(error, dict) and error.get("code") == "AUTHENTICATION_REQUIRED"
+        ):
             raise Unauthorized
         if result.is_error:
             raise IFoodError(tool, text or json.dumps(data, ensure_ascii=False))

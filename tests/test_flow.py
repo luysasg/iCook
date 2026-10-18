@@ -266,8 +266,13 @@ async def test_full_flow_orders_only_after_button(fake):
     s = connected_session()
     scripted.turns = [
         {"reply": "Boa! Pra quantas pessoas?", "action": "none", "quick_replies": ["2", "4"]},
-        {"reply": "Vou te mostrar a receita, só um instante!", "action": "show_recipe", "servings": 2,
-         "restrictions": "nenhuma", "recipe": RECIPE},
+        {
+            "reply": "Vou te mostrar a receita, só um instante!",
+            "action": "show_recipe",
+            "servings": 2,
+            "restrictions": "nenhuma",
+            "recipe": RECIPE,
+        },
         {"reply": "É só clicar em Confirmar pedido.", "action": "none"},
         {"reply": "Vou ver!", "action": "track_order"},
         {"reply": "Vou ver os detalhes.", "action": "order_details"},
@@ -298,7 +303,9 @@ async def test_full_flow_orders_only_after_button(fake):
     assert options[0]["missing"] == ["Creme de leite"] and options[1]["missing"] == ["Cebola"]
     assert stores_msg["data"]["not_found"] == []
     # Gap-filling: each store was searched for what it was missing.
-    assert ("searchOffers", "m-oba") in [(t, a["refinements"].get("merchantId")) for t, a in ifood_fake.calls if t == "searchOffers"]
+    assert ("searchOffers", "m-oba") in [
+        (t, a["refinements"].get("merchantId")) for t, a in ifood_fake.calls if t == "searchOffers"
+    ]
 
     # Store → the user picks the payment method (nothing is chosen for them).
     out = await agent.choose_store(s, 0, from_button=True)
@@ -311,7 +318,10 @@ async def test_full_flow_orders_only_after_button(fake):
     assert all(i["options"] == [] for i in create["items"])
 
     out = await agent.choose_payment(s, 0, from_button=True)
-    assert ("setCartPayment", {"cartId": "cart-1", "paymentMethodId": "pm-credit", "cardTokenId": "tok-1"}) in ifood_fake.calls
+    assert (
+        "setCartPayment",
+        {"cartId": "cart-1", "paymentMethodId": "pm-credit", "cardTokenId": "tok-1"},
+    ) in ifood_fake.calls
     assert s.phase == "voucher" and out[-1]["kind"] == "vouchers"
 
     out = await agent.choose_voucher(s, 0, from_button=True)
@@ -405,8 +415,11 @@ async def test_store_below_minimum_asks_to_add_items(fake):
     s = connected_session()
     scripted.turns = [
         {"reply": "", "action": "search_stores", "shopping_list": SHOPPING_LIST},
-        {"reply": "", "action": "search_stores",
-         "shopping_list": SHOPPING_LIST + [{"name": "Cebola", "search_term": "cebola", "quantity": 1, "unit": "kg"}]},
+        {
+            "reply": "",
+            "action": "search_stores",
+            "shopping_list": SHOPPING_LIST + [{"name": "Cebola", "search_term": "cebola", "quantity": 1, "unit": "kg"}],
+        },
     ]
     out = await agent.handle_message(s, "pode buscar")
     daki = out[-1]["data"]["options"][1]
@@ -453,7 +466,11 @@ async def test_no_open_store(fake):
     _, scripted = fake
     s = connected_session()
     scripted.turns = [
-        {"reply": "Buscando!", "action": "search_stores", "shopping_list": [{"name": "X", "search_term": "nada", "quantity": 1, "unit": "un"}]}
+        {
+            "reply": "Buscando!",
+            "action": "search_stores",
+            "shopping_list": [{"name": "X", "search_term": "nada", "quantity": 1, "unit": "un"}],
+        }
     ]
     out = await agent.handle_message(s, "pode buscar")
     assert s.phase == "chat"
@@ -571,7 +588,9 @@ def openrouter_with(monkeypatch, behaviour):
             return httpx.Response(result, json={"error": {"code": result, "message": "nope"}})
         return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": result}}]})
 
-    monkeypatch.setattr(llm, "_client", httpx.AsyncClient(base_url="http://fake", transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(
+        llm, "_client", httpx.AsyncClient(base_url="http://fake", transport=httpx.MockTransport(handler))
+    )
     monkeypatch.setattr(config, "LLM_MODELS", list(behaviour))
     return requests
 
@@ -579,7 +598,12 @@ def openrouter_with(monkeypatch, behaviour):
 async def test_llm_falls_back_to_the_next_model(monkeypatch):
     requests = openrouter_with(
         monkeypatch,
-        {"overloaded": 503, "slow": "slow", "chatty": "not json", "ok": '```json\n{"reply": "oi", "action": "none"}\n```'},
+        {
+            "overloaded": 503,
+            "slow": "slow",
+            "chatty": "not json",
+            "ok": '```json\n{"reply": "oi", "action": "none"}\n```',
+        },
     )
     assert await llm.generate_json("sys", "oi", {"type": "object"}, timeout=0.05) == {"reply": "oi", "action": "none"}
     assert [r["model"] for r in requests] == ["overloaded", "slow", "chatty", "ok"]
@@ -618,9 +642,14 @@ def test_guard_enforces_the_documented_rules():
 
     blocked("createCart", {"merchantId": "m1", "items": []}, "getCart")  # resume, don't recreate
     blocked("addItemToCart", {"cartId": "c1", "itemId": "i-2", "quantity": 1}, "options")
-    blocked("addItemToCart", {"cartId": "c1", "itemId": "i-2", "quantity": 1, "options": [{"optionId": "o"}]}, "getItem")
-    blocked("updateCartItem", {"cartId": "c1", "cartItemId": "i-1", "itemId": "i-1", "quantity": 2, "options": []},
-            "cartItemId")  # an itemId where a cartItemId is expected
+    blocked(
+        "addItemToCart", {"cartId": "c1", "itemId": "i-2", "quantity": 1, "options": [{"optionId": "o"}]}, "getItem"
+    )
+    blocked(
+        "updateCartItem",
+        {"cartId": "c1", "cartItemId": "i-1", "itemId": "i-1", "quantity": 2, "options": []},
+        "cartItemId",
+    )  # an itemId where a cartItemId is expected
     blocked("setCartDelivery", {"cartId": "c1", "deliveryMethodId": "DEFAULT"}, "getCartDeliveryMethods")
     blocked("setCartPayment", {"cartId": "c1", "paymentMethodId": "PIX"}, "listPaymentMethods")
     blocked("setVoucher", {"cartId": "c1", "code": "X", "campaignId": "y"}, "listVouchers")
@@ -630,8 +659,11 @@ def test_guard_enforces_the_documented_rules():
     g.check("addItemToCart", {"cartId": "c1", "itemId": "i-2", "quantity": 1, "options": [{"optionId": "o"}]})
     g.record("getCartDeliveryMethods", {"cartId": "c1"}, {"methods": [{"deliveryMethodId": "DEFAULT"}]})
     g.record("setCartDelivery", {"cartId": "c1", "deliveryMethodId": "DEFAULT"}, {})
-    g.record("listPaymentMethods", {"merchantId": "m1"},
-             {"methods": [{"paymentMethodId": "CC", "name": "Crédito", "cards": [{"cardTokenId": "t1"}]}]})
+    g.record(
+        "listPaymentMethods",
+        {"merchantId": "m1"},
+        {"methods": [{"paymentMethodId": "CC", "name": "Crédito", "cards": [{"cardTokenId": "t1"}]}]},
+    )
     blocked("setCartPayment", {"cartId": "c1", "paymentMethodId": "CC"}, "listPaymentMethods")  # token required
     g.check("setCartPayment", {"cartId": "c1", "paymentMethodId": "CC", "cardTokenId": "t1"})
     g.record("setCartPayment", {"cartId": "c1", "paymentMethodId": "CC", "cardTokenId": "t1"}, {})
@@ -815,8 +847,11 @@ async def test_personal_data_is_redacted_in_logs(fake, caplog):
 async def test_getuser_failure_falls_back_and_retries_once(fake, monkeypatch):
     ifood_fake, _ = fake
     monkeypatch.setattr(agent, "PROFILE_RETRY_SECONDS", 0)
-    ifood_fake.user = {"success": False, "error": {"code": "SERVICE_UNAVAILABLE", "message": "down"},
-                       "agentHints": {"suggestedNextAction": "retry"}}
+    ifood_fake.user = {
+        "success": False,
+        "error": {"code": "SERVICE_UNAVAILABLE", "message": "down"},
+        "agentHints": {"suggestedNextAction": "retry"},
+    }
     s = connected_session(address=None)
     out = await agent.resume(s)
     assert out[-1]["text"].startswith("Oi! 👋") and s.profile is None  # generic greeting, no personalization
@@ -854,7 +889,10 @@ BEHAVIOR_USER = {
         "paymentMethods": [{"id": "pm2", "type": "pix"}, {"id": "pm1", "type": "credit_card", "lastDigits": "9999"}],
         "profileData": {
             "userBehaviorDescription": "Pede mercado no almoço\n\nem dias úteis.",
-            "topMerchantTypes": [{"merchantType": "RESTAURANT", "count": "3"}, {"merchantType": "GROCERIES", "count": "12"}],
+            "topMerchantTypes": [
+                {"merchantType": "RESTAURANT", "count": "3"},
+                {"merchantType": "GROCERIES", "count": "12"},
+            ],
             "topWeekDayShift": {"weekDay": "WEEKDAY", "shift": "LUNCH"},
             "ordersByMerchantTypeWeekdayAndShift": {"GROCERIES": {"MONDAY": {"LUNCH": "4", "DINNER": "0"}}},
         },
@@ -914,20 +952,25 @@ async def test_inline_error_is_raised_even_without_is_error():
         await ifood.IFoodMCP(_MCPClient(payload)).call("submitOrder", {"cartId": "c", "userConsent": True})
 
 
-@pytest.mark.parametrize("answer", [
-    IFoodError("submitOrder", "CHECKOUT_FAILED: merchant closed"),  # what IFoodMCP raises for an inline error
-    {"success": True, "data": {}},  # no orderId
-])
+@pytest.mark.parametrize(
+    "answer",
+    [
+        IFoodError("submitOrder", "CHECKOUT_FAILED: merchant closed"),  # what IFoodMCP raises for an inline error
+        {"success": True, "data": {}},  # no orderId
+    ],
+)
 async def test_failed_submit_never_announces_an_order(fake, answer):
     ifood_fake, scripted = fake
     s = connected_session()
     await to_summary(s, scripted)
     if isinstance(answer, Exception):
+
         async def call(tool, args, original=ifood_fake.call):
             if tool == "submitOrder":
                 ifood_fake.calls.append((tool, args))
                 raise answer
             return await original(tool, args)
+
         ifood_fake.call = call
     else:
         ifood_fake.submit_result = answer
@@ -944,8 +987,17 @@ async def test_failed_submit_never_announces_an_order(fake, answer):
 async def test_craving_chips_come_from_the_behavior_profile(fake):
     ifood_fake, scripted = fake
     ifood_fake.user = BEHAVIOR_USER
-    scripted.chips = {"chips": ["Salada leve de frango", "salada leve de frango", "Wrap rápido",
-                                "Um nome de prato comprido demais para caber no botão", "Omelete", "Sopa", "Extra"]}
+    scripted.chips = {
+        "chips": [
+            "Salada leve de frango",
+            "salada leve de frango",
+            "Wrap rápido",
+            "Um nome de prato comprido demais para caber no botão",
+            "Omelete",
+            "Sopa",
+            "Extra",
+        ]
+    }
     s = connected_session(address=None)
     await agent.resume(s)
     out = await agent.choose_address(s, 0, from_button=True)

@@ -20,15 +20,37 @@ from .shopping import PaymentOption
 PERSONA_MAX_CHARS = 600
 WEEKDAYS = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
 WEEKDAY_WORDS = {
-    "MONDAY": "segunda", "TUESDAY": "terça", "WEDNESDAY": "quarta", "THURSDAY": "quinta", "FRIDAY": "sexta",
-    "SATURDAY": "sábado", "SUNDAY": "domingo", "WEEKDAY": "dias úteis", "WEEKEND": "fim de semana",
+    "MONDAY": "segunda",
+    "TUESDAY": "terça",
+    "WEDNESDAY": "quarta",
+    "THURSDAY": "quinta",
+    "FRIDAY": "sexta",
+    "SATURDAY": "sábado",
+    "SUNDAY": "domingo",
+    "WEEKDAY": "dias úteis",
+    "WEEKEND": "fim de semana",
 }
 SHIFT_WORDS = {
-    "BREAKFAST": "manhã", "MORNING": "manhã", "LUNCH": "almoço", "AFTERNOON": "tarde", "SNACK": "tarde",
-    "DINNER": "jantar", "EVENING": "jantar", "NIGHT": "jantar", "DAWN": "madrugada", "LATE_NIGHT": "madrugada",
+    "BREAKFAST": "manhã",
+    "MORNING": "manhã",
+    "LUNCH": "almoço",
+    "AFTERNOON": "tarde",
+    "SNACK": "tarde",
+    "DINNER": "jantar",
+    "EVENING": "jantar",
+    "NIGHT": "jantar",
+    "DAWN": "madrugada",
+    "LATE_NIGHT": "madrugada",
 }
-MERCHANT_TYPES = {"GROCERIES": "Mercado", "RESTAURANT": "Restaurante", "PHARMACY": "Farmácia", "PET": "Pet shop",
-                  "DRINKS": "Bebidas", "BEVERAGES": "Bebidas", "CONVENIENCE": "Conveniência"}
+MERCHANT_TYPES = {
+    "GROCERIES": "Mercado",
+    "RESTAURANT": "Restaurante",
+    "PHARMACY": "Farmácia",
+    "PET": "Pet shop",
+    "DRINKS": "Bebidas",
+    "BEVERAGES": "Bebidas",
+    "CONVENIENCE": "Conveniência",
+}
 CATEGORY_KEYS = ("topMerchantTypes", "favoriteCategories", "topCategories", "favoriteMerchantTypes")
 PATTERN_KEYS = ("topWeekDayShift", "topWeekdayShift", "topWeekDayShifts")
 COUNT_TABLE_KEYS = ("ordersByMerchantTypeWeekdayAndShift", "ordersByWeekdayAndShift", "ordersByDay")
@@ -269,4 +291,3 @@ def _add_pattern(profile: UserProfile, label: str, count: float | None = None) -
     text = " · ".join(types + days + shifts) + (f" ({count:g} pedidos)" if count is not None else "")
     if text not in profile.patterns:
         profile.patterns.append(text)
-

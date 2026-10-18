@@ -80,7 +80,10 @@ async def login(request: Request) -> RedirectResponse:
 
 @app.get("/callback")
 async def callback(
-    request: Request, code: str | None = None, state: str | None = None, error: str | None = None,
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
     error_description: str | None = None,
 ):
     s = _session(request)

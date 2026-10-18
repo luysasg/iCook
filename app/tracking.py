@@ -59,5 +59,8 @@ def tracker_view(order_id: str | None, short_code: str | None, data: dict[str, A
 def simulated_view(order_id: str | None, short_code: str | None, step: int) -> dict[str, Any]:
     """DRY_RUN: the `step`-th fake status (the last one repeats)."""
     code, description = DRY_RUN_STATUSES[min(step, len(DRY_RUN_STATUSES) - 1)]
-    data = {"status": {"code": code, "description": description}, "agentHints": {"retryMessage": "Poll again in 10 seconds"}}
+    data = {
+        "status": {"code": code, "description": description},
+        "agentHints": {"retryMessage": "Poll again in 10 seconds"},
+    }
     return {**tracker_view(order_id, short_code, data), "dry_run": True}

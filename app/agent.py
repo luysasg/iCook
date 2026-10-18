@@ -69,8 +69,16 @@ ERROR_DETAIL_MAX_CHARS = 300
 
 # Actions whose result the system shows itself: their reply text is filler and is dropped.
 SYSTEM_ACTIONS = {
-    "choose_address", "change_address", "show_recipe", "set_pantry", "search_stores", "choose_store",
-    "choose_payment", "choose_voucher", "track_order", "order_details",
+    "choose_address",
+    "change_address",
+    "show_recipe",
+    "set_pantry",
+    "search_stores",
+    "choose_store",
+    "choose_payment",
+    "choose_voucher",
+    "track_order",
+    "order_details",
 }
 
 
@@ -337,9 +345,7 @@ async def handle_message(s: Session, text: str, heard: bool = False) -> list[dic
 
     s.activity = THINKING
     try:
-        decision = await llm.generate_json(
-            _system_prompt(s), llm.to_contents(s.history), prompts.AGENT_SCHEMA
-        )
+        decision = await llm.generate_json(_system_prompt(s), llm.to_contents(s.history), prompts.AGENT_SCHEMA)
     except llm.RateLimited:
         return [_rate_limited(s)]
     except llm.LLMError:
@@ -382,8 +388,11 @@ def _reply(s: Session, decision: dict[str, Any], action: str) -> list[dict]:
 
 async def _run_action(s: Session, action: str, decision: dict[str, Any], replied: bool) -> list[dict]:
     """The step the LLM chose, when the current state allows it ([] = nothing to do)."""
-    number_key = {"choose_store": "store_number", "choose_payment": "payment_number",
-                  "choose_voucher": "voucher_number"}.get(action, "")
+    number_key = {
+        "choose_store": "store_number",
+        "choose_payment": "payment_number",
+        "choose_voucher": "voucher_number",
+    }.get(action, "")
     number = decision.get(number_key) if isinstance(decision.get(number_key), int) else None
     if action == "change_address" and s.phase != "ordered":
         return await ask_address(s)
@@ -431,7 +440,7 @@ async def resume(s: Session) -> list[dict]:
 
 
 async def new_conversation(s: Session) -> list[dict]:
-    """"Nova conversa" while connected: same profile (getUser only if it never loaded), new address question."""
+    """ "Nova conversa" while connected: same profile (getUser only if it never loaded), new address question."""
     try:
         await load_profile(s)
     except ifood.Unauthorized:
@@ -445,7 +454,7 @@ async def load_profile(s: Session) -> None:
         return
     try:
         s.profile = await _fetch_profile(s)
-    except (NotConnected, ifood.Unauthorized):
+    except NotConnected, ifood.Unauthorized:
         raise ifood.Unauthorized from None
     except Exception as e:  # noqa: BLE001 - any failure only costs the personalization
         log.warning("getUser failed (%s); retrying once in the background", _error_code(e))
@@ -662,8 +671,9 @@ async def search_stores(s: Session) -> list[dict]:
                 f"\n\n⚠️ Não encontrei **{', '.join(not_found)}** em nenhum mercado aberto. "
                 "Se escolher um mercado, o pedido vai sem esses itens."
             )
-        summary = _numbered([f"{o.name}: total {brl(o.total)}, faltando: {', '.join(o.missing) or 'nada'}"
-                             for o in options])
+        summary = _numbered(
+            [f"{o.name}: total {brl(o.total)}, faltando: {', '.join(o.missing) or 'nada'}" for o in options]
+        )
         return [
             s.say(
                 text,
@@ -684,11 +694,13 @@ async def choose_store(s: Session, index: int, from_button: bool = False) -> lis
         s.hear(f"Quero o mercado {store.name}")
     # Below the minimum the order can't go through: no cart yet, the user adds items (search_stores) or picks another.
     if store.below_minimum:
-        return [s.say(
-            f"O **{store.name}** tem pedido mínimo de **{brl(store.minimum_order)}** e sua lista lá dá "
-            f"{brl(store.subtotal)}: faltam **{brl(store.short_of_minimum)}**. Quer adicionar mais algum item? "
-            "É só me dizer o quê. Se preferir, escolha outro mercado da comparação."
-        )]
+        return [
+            s.say(
+                f"O **{store.name}** tem pedido mínimo de **{brl(store.minimum_order)}** e sua lista lá dá "
+                f"{brl(store.subtotal)}: faltam **{brl(store.short_of_minimum)}**. Quer adicionar mais algum item? "
+                "É só me dizer o quê. Se preferir, escolha outro mercado da comparação."
+            )
+        ]
 
     async def operation() -> list[dict]:
         assert s.address is not None
@@ -707,14 +719,18 @@ async def choose_store(s: Session, index: int, from_button: bool = False) -> lis
         s.store, s.cart_id, s.payment_options = store, cart_id, payment_options
         if not payment_options:
             s.phase = "compare"
-            return [s.say(f"O {store.name} não tem nenhuma forma de pagamento disponível pra você. Quer outro mercado?")]
+            return [
+                s.say(f"O {store.name} não tem nenhuma forma de pagamento disponível pra você. Quer outro mercado?")
+            ]
         s.phase = "payment"
         s.payment_preselected = user.preferred_payment(s.profile, payment_options)
         text = f"Carrinho pronto no **{store.name}**. Como você quer pagar?"
         if s.payment_preselected is not None:
             saved = payment_options[s.payment_preselected].label
-            text = (f"Carrinho pronto no **{store.name}**. Deixei marcado **{saved}**, que está salvo na sua conta. "
-                    "Confirme ou escolha outra forma:")
+            text = (
+                f"Carrinho pronto no **{store.name}**. Deixei marcado **{saved}**, que está salvo na sua conta. "
+                "Confirme ou escolha outra forma:"
+            )
         if store.missing:
             text = f"⚠️ Vai sem: {', '.join(store.missing)}.\n\n" + text
         selected = s.payment_preselected + 1 if s.payment_preselected is not None else None
@@ -722,8 +738,12 @@ async def choose_store(s: Session, index: int, from_button: bool = False) -> lis
             s.say(
                 text,
                 kind="payment",
-                data={"options": [{"number": n, "label": o.label, "offline": o.offline}
-                                  for n, o in enumerate(payment_options, 1)], "selected": selected},
+                data={
+                    "options": [
+                        {"number": n, "label": o.label, "offline": o.offline} for n, o in enumerate(payment_options, 1)
+                    ],
+                    "selected": selected,
+                },
                 history_text=f"{text}\n{_numbered([o.label for o in payment_options])}",
             )
         ]
@@ -826,10 +846,13 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
         log.info("DRY_RUN: submitOrder skipped for cart %s (document %s)", checkout.cart_id, bool(document))
         s.order_id, s.short_code, s.dry_run_step = f"demo-{secrets.token_hex(3)}", "DEMO", 0
         s.phase = "ordered"
-        out = [s.say(
-            f"Pedido simulado no **{checkout.store.name}** (modo de teste: nada foi enviado ao iFood). 🧪",
-            kind="order", data={"order_id": s.order_id, "short_code": s.short_code, "dry_run": True},
-        )]
+        out = [
+            s.say(
+                f"Pedido simulado no **{checkout.store.name}** (modo de teste: nada foi enviado ao iFood). 🧪",
+                kind="order",
+                data={"order_id": s.order_id, "short_code": s.short_code, "dry_run": True},
+            )
+        ]
         return out + [s.say("", kind="tracker", data=_simulated_track(s), remember=False)]
 
     async def operation() -> list[dict]:
@@ -842,8 +865,12 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
             except IFoodError as e:
                 if not document and any(h in e.message.lower() for h in DOCUMENT_HINTS):
                     s.phase = "need_document"
-                    return [s.say("O iFood pediu um documento para finalizar. Qual o seu **CPF** (só números)? "
-                                  "Para contas estrangeiras, o número do passaporte.")]
+                    return [
+                        s.say(
+                            "O iFood pediu um documento para finalizar. Qual o seu **CPF** (só números)? "
+                            "Para contas estrangeiras, o número do passaporte."
+                        )
+                    ]
                 raise
             order_id = first_value(result, "orderId") or first_value(result, "id")
             if not order_id:
@@ -856,7 +883,9 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
             if s.short_code:
                 text += f" Código: **{s.short_code}**."
             out = [s.say(text, kind="order", data={"order_id": s.order_id, "short_code": s.short_code})]
-            tracker = tracking.tracker_view(s.order_id, s.short_code, await client.call("trackOrder", {"orderId": s.order_id}))
+            tracker = tracking.tracker_view(
+                s.order_id, s.short_code, await client.call("trackOrder", {"orderId": s.order_id})
+            )
             out.append(s.say("", kind="tracker", data=tracker, remember=False))
             return out
 

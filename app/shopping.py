@@ -159,7 +159,11 @@ def parse_addresses(data: dict[str, Any]) -> list[Address]:
             continue
         alias = entry.get("alias") if isinstance(entry.get("alias"), str) else None
         street = next(
-            (v for k in ("formattedAddress", "location", "streetName", "address") if isinstance(v := entry.get(k), str)),
+            (
+                v
+                for k in ("formattedAddress", "location", "streetName", "address")
+                if isinstance(v := entry.get(k), str)
+            ),
             None,
         )
         if alias and street:
@@ -208,7 +212,9 @@ async def find_store_options(
     """Returns (store options sorted best-first, ingredients no compared store has)."""
     semaphore = asyncio.Semaphore(SEARCH_CONCURRENCY)
 
-    async def search(term: str, merchant_id: str | None = None, page_size: int = SEARCH_PAGE_SIZE) -> list[dict[str, Any]]:
+    async def search(
+        term: str, merchant_id: str | None = None, page_size: int = SEARCH_PAGE_SIZE
+    ) -> list[dict[str, Any]]:
         refinements: dict[str, Any] = {"onlyOpen": True}
         if merchant_id:
             refinements["merchantId"] = merchant_id
@@ -255,10 +261,7 @@ async def find_store_options(
     )
     top = ranked[: config.MAX_STORES]
     gaps = [
-        (s.merchant_id, i)
-        for s in top
-        for i in range(len(ingredients))
-        if i not in candidates.get(s.merchant_id, {})
+        (s.merchant_id, i) for s in top for i in range(len(ingredients)) if i not in candidates.get(s.merchant_id, {})
     ]
     gap_results = await asyncio.gather(
         *(search(ingredients[i].search_term, merchant_id, page_size=GAP_SEARCH_PAGE_SIZE) for merchant_id, i in gaps)
@@ -354,8 +357,11 @@ def _text(d: dict[str, Any]) -> str:
 
 def _payment_label(method: dict[str, Any], parent: dict[str, Any] | None) -> str:
     name = next(
-        (v for v in (method.get("brand"), method.get("name"), (parent or {}).get("name"), method.get("type"))
-         if isinstance(v, str) and v),
+        (
+            v
+            for v in (method.get("brand"), method.get("name"), (parent or {}).get("name"), method.get("type"))
+            if isinstance(v, str) and v
+        ),
         "forma de pagamento",
     )
     digits = last_digits(method)
@@ -399,7 +405,11 @@ def parse_vouchers(data: dict[str, Any]) -> list[Voucher]:
         if not code or not d.get("campaignId"):
             continue
         description = next(
-            (v for k in ("title", "description", "name", "discountDescription") if isinstance(v := d.get(k), str) and v),
+            (
+                v
+                for k in ("title", "description", "name", "discountDescription")
+                if isinstance(v := d.get(k), str) and v
+            ),
             None,
         )
         label = description or "Cupom iFood"
@@ -419,8 +429,13 @@ async def _sync_items(ifood: Caller, cart_id: str, wanted: dict[str, int], cart:
         elif int(as_number(line.get("quantity")) or 0) != quantity:  # counts may come as strings
             await ifood.call(
                 "updateCartItem",
-                {"cartId": cart_id, "cartItemId": str(line["cartItemId"]), "itemId": item_id, "quantity": quantity,
-                 "options": []},
+                {
+                    "cartId": cart_id,
+                    "cartItemId": str(line["cartItemId"]),
+                    "itemId": item_id,
+                    "quantity": quantity,
+                    "options": [],
+                },
             )
     for item_id, line in current.items():
         if item_id not in wanted:

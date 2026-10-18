@@ -63,9 +63,7 @@ async def _token_request(data: dict[str, str]) -> Tokens:
     if config.IFOOD_CLIENT_SECRET:
         data["client_secret"] = config.IFOOD_CLIENT_SECRET
     async with httpx.AsyncClient(timeout=TOKEN_REQUEST_TIMEOUT) as http:
-        response = await http.post(
-            f"{config.IFOOD_AUTH_URL}/token", data=data, headers={"Accept": "application/json"}
-        )
+        response = await http.post(f"{config.IFOOD_AUTH_URL}/token", data=data, headers={"Accept": "application/json"})
     if response.status_code != 200:
         raise AuthError(f"token endpoint returned {response.status_code}: {response.text[:500]}")
     body = response.json()
