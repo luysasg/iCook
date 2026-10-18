@@ -16,6 +16,9 @@ import httpx
 from . import config
 
 REFRESH_MARGIN_SECONDS = 300
+TOKEN_REQUEST_TIMEOUT = 20
+# Used when the token response has no expires_in.
+DEFAULT_TOKEN_LIFETIME_SECONDS = 3600
 
 
 class AuthError(Exception):
@@ -59,7 +62,7 @@ async def _token_request(data: dict[str, str]) -> Tokens:
     data = {**data, "client_id": config.IFOOD_CLIENT_ID, "resource": config.IFOOD_MCP_URL}
     if config.IFOOD_CLIENT_SECRET:
         data["client_secret"] = config.IFOOD_CLIENT_SECRET
-    async with httpx.AsyncClient(timeout=20) as http:
+    async with httpx.AsyncClient(timeout=TOKEN_REQUEST_TIMEOUT) as http:
         response = await http.post(
             f"{config.IFOOD_AUTH_URL}/token", data=data, headers={"Accept": "application/json"}
         )
@@ -69,7 +72,7 @@ async def _token_request(data: dict[str, str]) -> Tokens:
     return Tokens(
         access_token=body["access_token"],
         refresh_token=body.get("refresh_token"),
-        expires_at=time.time() + int(body.get("expires_in", 3600)),
+        expires_at=time.time() + int(body.get("expires_in", DEFAULT_TOKEN_LIFETIME_SECONDS)),
     )
 
 

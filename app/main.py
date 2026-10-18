@@ -19,8 +19,10 @@ log = logging.getLogger("main")
 
 STATIC = Path(__file__).parent / "static"
 SESSIONS: dict[str, agent.Session] = {}
+# Longer chat messages are cut before they reach the agent.
+MAX_MESSAGE_CHARS = 2000
 
-app = FastAPI(title="Bateu a Vontade")
+app = FastAPI(title=config.APP_NAME)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -162,7 +164,7 @@ async def resume(request: Request) -> JSONResponse:
 @app.post("/api/chat")
 async def chat(request: Request, body: ChatIn) -> JSONResponse:
     s = _session(request)
-    text = body.message.strip()[:2000]
+    text = body.message.strip()[:MAX_MESSAGE_CHARS]
     if not text:
         return _payload(s)
     return await _locked(s, agent.handle_message(s, text))

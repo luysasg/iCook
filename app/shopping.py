@@ -20,6 +20,13 @@ log = logging.getLogger("shopping")
 
 SEARCH_CONCURRENCY = 4
 CANDIDATES_PER_INGREDIENT = 4
+# Results per searchOffers call: the wide search across stores, then gap-filling inside one store.
+SEARCH_PAGE_SIZE = 25
+GAP_SEARCH_PAGE_SIZE = 5
+# Ranking tie-breaker for stores that don't report a distance (sorts them last).
+UNKNOWN_DISTANCE_KM = 99.0
+# Product matching sees every store at once, so it gets longer than config.LLM_TIMEOUT.
+PICKER_LLM_TIMEOUT = 45
 PICKUP_WORDS = ("PICKUP", "TAKEOUT", "RETIRADA")
 OFFLINE_PAYMENT_WORDS = ("CASH", "DINHEIRO", "OFFLINE", "NA ENTREGA")
 CARD_WORDS = ("CARD", "CREDIT", "DEBIT", "CRÉDITO", "CREDITO", "DÉBITO", "DEBITO", "CARTÃO", "CARTAO")
@@ -201,7 +208,7 @@ async def find_store_options(
     """Returns (store options sorted best-first, ingredients no compared store has)."""
     semaphore = asyncio.Semaphore(SEARCH_CONCURRENCY)
 
-    async def search(term: str, merchant_id: str | None = None, page_size: int = 25) -> list[dict[str, Any]]:
+    async def search(term: str, merchant_id: str | None = None, page_size: int = SEARCH_PAGE_SIZE) -> list[dict[str, Any]]:
         refinements: dict[str, Any] = {"onlyOpen": True}
         if merchant_id:
             refinements["merchantId"] = merchant_id
@@ -244,7 +251,7 @@ async def find_store_options(
 
     # Best coverage first, closest as tie-breaker; then look for what's missing inside each of them.
     ranked = sorted(
-        stores.values(), key=lambda s: (-len(candidates.get(s.merchant_id, {})), s.distance_km or 99.0)
+        stores.values(), key=lambda s: (-len(candidates.get(s.merchant_id, {})), s.distance_km or UNKNOWN_DISTANCE_KM)
     )
     top = ranked[: config.MAX_STORES]
     gaps = [
@@ -254,7 +261,7 @@ async def find_store_options(
         if i not in candidates.get(s.merchant_id, {})
     ]
     gap_results = await asyncio.gather(
-        *(search(ingredients[i].search_term, merchant_id, page_size=5) for merchant_id, i in gaps)
+        *(search(ingredients[i].search_term, merchant_id, page_size=GAP_SEARCH_PAGE_SIZE) for merchant_id, i in gaps)
     )
     for (merchant_id, i), items in zip(gaps, gap_results, strict=True):
         collect(i, [r for r in items if (r.get("merchant") or {}).get("merchantId") == merchant_id])
@@ -304,7 +311,7 @@ async def _match_products(
     if not refs:
         return picks
     data = await llm.generate_json(
-        prompts.PICKER_SYSTEM, "\n".join(lines), prompts.PICKER_SCHEMA, temperature=0.1, timeout=45
+        prompts.PICKER_SYSTEM, "\n".join(lines), prompts.PICKER_SCHEMA, temperature=0.1, timeout=PICKER_LLM_TIMEOUT
     )
     for store_entry in data.get("stores") or []:
         for entry in store_entry.get("picks") or []:

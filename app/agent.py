@@ -55,6 +55,10 @@ PROFILE_RETRY_SECONDS = 3.0
 CHIPS_LLM_TIMEOUT = 20.0
 CHIPS_RETRY_SECONDS = 1.0
 CHIPS_RETRY_MAX_SECONDS = 10.0
+MAX_CHIPS = 4
+MAX_CHIP_CHARS = 30
+# iFood error text shown to the user is cut to this length.
+ERROR_DETAIL_MAX_CHARS = 300
 
 # Progress steps of the tracker card. The status text itself is shown verbatim from trackOrder.
 ORDER_STEPS = ["Recebido", "Confirmado", "Em preparo", "A caminho", "Entregue"]
@@ -70,6 +74,8 @@ STEP_OF_CODE = {
 }
 FINAL_CODES = ("CONCLUDED", "CANCELLED")
 DEFAULT_POLL_SECONDS = 30
+MIN_POLL_SECONDS = 10
+MAX_POLL_SECONDS = 600
 DRY_RUN_STATUSES = [
     ("PLACED", "[Simulação] Pedido recebido pelo iFood."),
     ("CONFIRMED", "[Simulação] O mercado confirmou o pedido."),
@@ -264,7 +270,7 @@ async def _run(s: Session, operation: Callable[[], Awaitable[list[dict]]], failu
         return [_disconnected(s)]
     except IFoodError as e:
         log.warning("iFood error: %s", e)
-        return [s.say(f"{failure}\n\n_Detalhe do iFood: {e.message[:300]}_", remember=False)]
+        return [s.say(f"{failure}\n\n_Detalhe do iFood: {e.message[:ERROR_DETAIL_MAX_CHARS]}_", remember=False)]
     except llm.RateLimited:
         return [_rate_limited(s)]
     except Exception:
@@ -437,7 +443,7 @@ async def handle_message(s: Session, text: str, heard: bool = False) -> list[dic
     reply = str(decision.get("reply") or "").strip()
     # The system shows the result of an action itself; a reply there is just filler.
     if reply and action not in SYSTEM_ACTIONS:
-        chips = [str(c).strip() for c in decision.get("quick_replies") or [] if str(c).strip()][:4]
+        chips = [str(c).strip() for c in decision.get("quick_replies") or [] if str(c).strip()][:MAX_CHIPS]
         out.append(s.say(reply, data={"chips": chips} if chips else None))
 
     if s.phase == "address":
@@ -573,9 +579,9 @@ async def _suggest_chips(system: str, context: str) -> list[str] | None:
     chips: list[str] = []
     for raw in answer.get("chips") or []:
         chip = re.sub(r"\s+", " ", str(raw)).strip(" .")
-        if chip and len(chip) <= 30 and chip.lower() not in (c.lower() for c in chips):
+        if chip and len(chip) <= MAX_CHIP_CHARS and chip.lower() not in (c.lower() for c in chips):
             chips.append(chip)
-    return chips[:4]
+    return chips[:MAX_CHIPS]
 
 
 async def _craving_chips(s: Session) -> list[str]:
@@ -954,7 +960,7 @@ def _poll_seconds(hints: dict[str, Any]) -> int:
     if not match:
         return DEFAULT_POLL_SECONDS
     seconds = int(match.group(1)) * (60 if match.group(2).lower().startswith("min") else 1)
-    return max(10, min(seconds, 600))
+    return max(MIN_POLL_SECONDS, min(seconds, MAX_POLL_SECONDS))
 
 
 def _tracker_view(s: Session, data: dict[str, Any]) -> dict[str, Any]:

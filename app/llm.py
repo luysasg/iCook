@@ -22,7 +22,7 @@ _client = httpx.AsyncClient(
     headers={
         "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
         "HTTP-Referer": f"http://localhost:{config.APP_PORT}",
-        "X-Title": "Bateu a Vontade",
+        "X-Title": config.APP_NAME,
     },
 )
 

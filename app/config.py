@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+APP_NAME = "Bateu a Vontade"
+
 
 def _required(name: str) -> str:
     value = os.getenv(name, "").strip()
