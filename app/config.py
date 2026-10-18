@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-APP_NAME = "Bateu a Vontade"
+APP_NAME = "iCook"
 
 
 def _required(name: str) -> str:

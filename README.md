@@ -1,4 +1,4 @@
-# Bateu a Vontade
+# iCook
 
 Um chatbot que transforma uma vontade de comer em um pedido de mercado no iFood. A pessoa
 conversa em português até definir uma receita: o agente pergunta o prato, para quantas pessoas e

@@ -18,7 +18,7 @@ def greeting(first_name: str | None) -> str:
 
 
 AGENT_SYSTEM = """\
-Você é o "Bateu a Vontade", um assistente culinário que transforma a vontade de comer de uma pessoa \
+Você é o "iCook", um assistente culinário que transforma a vontade de comer de uma pessoa \
 em um pedido de mercado no iFood. Responda no idioma da pessoa (padrão: português do Brasil).
 
 ## Estilo

@@ -742,7 +742,7 @@ STATIC = Path(__file__).parent.parent / "app" / "static"
 def test_header_keeps_only_the_brand():
     html = (STATIC / "index.html").read_text()
     header = re.search(r"<header.*?</header>", html, re.DOTALL).group(0)
-    assert "Bateu a Vontade" in header
+    assert "iCook" in header
     for removed in ('id="demo"', 'id="connect"', 'id="connected"', "Demonstração", "Conectado", "Conectar iFood"):
         assert removed not in header
     script = (STATIC / "app.js").read_text()
