@@ -181,12 +181,12 @@ class Session:
         self.recipe_message = None
         self.shopping_list = []
         self.options = []
-        self._clear_cart()
+        self.clear_cart()
         self.order_id = None
         self.short_code = None
         self.dry_run_step = 0
 
-    def _clear_cart(self) -> None:
+    def clear_cart(self) -> None:
         self.store = None
         self.cart_id = None
         self.payment_options = []
@@ -196,7 +196,7 @@ class Session:
         self.voucher = None
         self.checkout = None
 
-    def _remember(self, role: str, text: str) -> None:
+    def remember(self, role: str, text: str) -> None:
         # Merge consecutive turns from the same side so the LLM history alternates.
         if self.history and self.history[-1]["role"] == role:
             self.history[-1]["text"] += "\n\n" + text
@@ -206,7 +206,7 @@ class Session:
     def hear(self, text: str, history_text: str | None = None, remember: bool = True) -> None:
         self.messages.append({"id": secrets.token_hex(4), "role": "user", "kind": "text", "text": text})
         if remember:
-            self._remember("user", history_text or text)
+            self.remember("user", history_text or text)
 
     def say(
         self,
@@ -219,7 +219,7 @@ class Session:
         message = {"id": secrets.token_hex(4), "role": "bot", "kind": kind, "text": text, "data": data, "rev": 0}
         self.messages.append(message)
         if remember:
-            self._remember("model", history_text or text)
+            self.remember("model", history_text or text)
         return message
 
     def redact(self, text: str) -> str:
@@ -290,6 +290,12 @@ def _rate_limited(s: Session) -> dict:
         "Recebi muitas mensagens em pouco tempo (limite gratuito do Gemini). Manda de novo em alguns segundos? 🙏",
         remember=False,
     )
+
+
+def _forget_tokens(s: Session) -> list[dict]:
+    """iFood rejected the token: show the connect card."""
+    s.tokens = None
+    return [_disconnected(s)]
 
 
 def _numbered(options: list[str]) -> str:
@@ -412,7 +418,7 @@ async def handle_message(s: Session, text: str, heard: bool = False) -> list[dic
         s.phase = "checkout"
 
     if heard:
-        s._remember("user", text)
+        s.remember("user", text)
     else:
         s.hear(text)
 
@@ -494,8 +500,7 @@ async def resume(s: Session) -> list[dict]:
     try:
         await load_profile(s)
     except ifood.Unauthorized:
-        s.tokens = None
-        return [_disconnected(s)]
+        return _forget_tokens(s)
     name = s.profile.first_name if s.profile else None
     if s.address is None:
         return await ask_address(s, intro=f"{prompts.greeting(name)} Sua conta iFood está conectada. ")
@@ -508,8 +513,7 @@ async def new_conversation(s: Session) -> list[dict]:
     try:
         await load_profile(s)
     except ifood.Unauthorized:
-        s.tokens = None
-        return [_disconnected(s)]
+        return _forget_tokens(s)
     return await ask_address(s, intro=f"{prompts.greeting(s.profile.first_name if s.profile else None)} ")
 
 
@@ -622,7 +626,7 @@ async def ask_address(s: Session, intro: str = "") -> list[dict]:
     s.phase = "address"
     s.addresses = []
     s.options = []
-    s._clear_cart()
+    s.clear_cart()
 
     async def operation() -> list[dict]:
         async with _ifood(s) as client:
@@ -641,7 +645,7 @@ async def ask_address(s: Session, intro: str = "") -> list[dict]:
             s.say(
                 f"{intro}Onde você está agora? Escolha o endereço de entrega:",
                 kind="addresses",
-                data={"options": [{"number": n, "label": a.label} for n, a in enumerate(s.addresses, 1)]},
+                data={"options": _options_view([a.label for a in s.addresses])},
                 remember=False,
             )
         ]
@@ -680,7 +684,7 @@ def show_recipe(s: Session, recipe: Recipe) -> list[dict]:
     s.phase = "pantry"
     s.shopping_list = []
     s.options = []
-    s._clear_cart()
+    s.clear_cart()
     message = s.say(
         prompts.ASK_PANTRY,
         kind="recipe",
@@ -709,7 +713,7 @@ async def apply_pantry(s: Session, have: list[int]) -> list[dict]:
 async def search_stores(s: Session) -> list[dict]:
     async def operation() -> list[dict]:
         assert s.address is not None
-        s._clear_cart()
+        s.clear_cart()
 
         def progress(text: str) -> None:
             s.activity = text
@@ -766,7 +770,7 @@ async def choose_store(s: Session, index: int, from_button: bool = False) -> lis
 
     async def operation() -> list[dict]:
         assert s.address is not None
-        s._clear_cart()
+        s.clear_cart()
         async with _ifood(s) as client:
             existing = s.guard.cart_for(store.merchant_id)
             try:
@@ -826,7 +830,7 @@ async def choose_payment(s: Session, index: int, from_button: bool = False) -> l
             s.say(
                 text,
                 kind="vouchers",
-                data={"options": [{"number": n, "label": v.label} for n, v in enumerate(s.vouchers, 1)]},
+                data={"options": _options_view([v.label for v in s.vouchers])},
                 history_text=f"{text}\n{_numbered([v.label for v in s.vouchers])}\n0. Sem cupom",
             )
         ]
@@ -941,9 +945,8 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
             if s.short_code:
                 text += f" Código: **{s.short_code}**."
             out = [s.say(text, kind="order", data={"order_id": s.order_id, "short_code": s.short_code})]
-            if s.order_id:
-                tracker = _tracker_view(s, await client.call("trackOrder", {"orderId": s.order_id}))
-                out.append(s.say("", kind="tracker", data=tracker, remember=False))
+            tracker = _tracker_view(s, await client.call("trackOrder", {"orderId": s.order_id}))
+            out.append(s.say("", kind="tracker", data=tracker, remember=False))
             return out
 
     return await _run(
@@ -1038,6 +1041,15 @@ async def order_details(s: Session) -> list[dict]:
 # ---------------------------------------------------------------- UI payloads
 
 
+def _eta_label(eta: tuple[int, int] | None) -> str | None:
+    return f"{eta[0]}–{eta[1]} min" if eta else None
+
+
+def _options_view(labels: list[str]) -> list[dict[str, Any]]:
+    """Numbered buttons of a choice card (addresses, vouchers)."""
+    return [{"number": n, "label": label} for n, label in enumerate(labels, 1)]
+
+
 def _stores_view(s: Session, not_found: list[str]) -> dict[str, Any]:
     return {
         "not_found": not_found,
@@ -1047,7 +1059,7 @@ def _stores_view(s: Session, not_found: list[str]) -> dict[str, Any]:
                 "number": n,
                 "name": o.name,
                 "rating": f"{o.rating:.1f}" if o.rating else None,
-                "eta": f"{o.eta[0]}–{o.eta[1]} min" if o.eta else None,
+                "eta": _eta_label(o.eta),
                 "delivery_fee": "Grátis" if o.delivery_fee == 0 else brl(o.delivery_fee),
                 "subtotal": brl(o.subtotal),
                 "total": brl(o.total),
@@ -1066,7 +1078,7 @@ def _checkout_view(c: shopping.Checkout) -> dict[str, Any]:
     return {
         "store": c.store.name,
         "address": c.address.label,
-        "eta": f"{c.store.eta[0]}–{c.store.eta[1]} min" if c.store.eta else None,
+        "eta": _eta_label(c.store.eta),
         "payment": c.payment_label,
         "voucher": c.voucher_label,
         "items": c.items,

@@ -18,7 +18,7 @@ from typing import Any
 
 from . import config
 from .ifood import Caller, IFoodError
-from .jsonutil import dicts_with, first_value
+from .jsonutil import cart_id_of, dicts_with, first_value
 from .shopping import parse_payment_options, parse_vouchers
 
 log = logging.getLogger("guard")
@@ -148,9 +148,9 @@ class Guard:
 
     def record(self, tool: str, args: dict[str, Any], result: dict[str, Any]) -> None:
         if tool == "createCart":
-            cart_id = first_value(result, "cartId") or first_value(result, "id")
+            cart_id = cart_id_of(result)
             if cart_id:
-                cart = CartState(str(cart_id), str(args.get("merchantId") or first_value(result, "merchantId")))
+                cart = CartState(cart_id, str(args.get("merchantId") or first_value(result, "merchantId")))
                 self.carts[cart.cart_id] = cart
                 self._record_items(cart, result)
             return

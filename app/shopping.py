@@ -14,7 +14,7 @@ from typing import Any
 
 from . import config, llm, prompts
 from .ifood import Caller, IFoodError
-from .jsonutil import as_number, brl, dicts_with, first_value
+from .jsonutil import as_number, brl, cart_id_of, dicts_with, first_value, last_digits
 
 log = logging.getLogger("shopping")
 
@@ -358,7 +358,7 @@ def _payment_label(method: dict[str, Any], parent: dict[str, Any] | None) -> str
          if isinstance(v, str) and v),
         "forma de pagamento",
     )
-    digits = method.get("lastDigits") or method.get("last4") or method.get("lastFourDigits")
+    digits = last_digits(method)
     label = f"{name} final {digits}" if digits else name
     kind = (parent or {}).get("name")
     return f"{label} ({kind})" if parent and isinstance(kind, str) and kind and kind not in label else label
@@ -407,11 +407,6 @@ def parse_vouchers(data: dict[str, Any]) -> list[Voucher]:
     return vouchers
 
 
-def _cart_id(data: dict[str, Any]) -> str | None:
-    value = first_value(data, "cartId") or first_value(data, "id")
-    return str(value) if value else None
-
-
 async def _sync_items(ifood: Caller, cart_id: str, wanted: dict[str, int], cart: dict[str, Any]) -> None:
     """Brings an existing cart to the wanted {itemId: quantity} instead of creating a new one."""
     current = {str(line.get("itemId")): line for line in dicts_with(cart, "cartItemId")}
@@ -444,7 +439,7 @@ async def prepare_cart(ifood: Caller, store: StoreOption, address: Address, exis
         cart = await ifood.call(
             "createCart", {"merchantId": store.merchant_id, "addressId": address.address_id, "items": items}
         )
-        cart_id = _cart_id(cart)
+        cart_id = cart_id_of(cart)
         if not cart_id:
             raise IFoodError("createCart", "a resposta não trouxe o cartId")
 

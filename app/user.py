@@ -14,7 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .ifood import Unauthorized
-from .jsonutil import as_number
+from .jsonutil import as_number, last_digits
 from .shopping import PaymentOption
 
 PERSONA_MAX_CHARS = 600
@@ -201,7 +201,7 @@ def _payments(raw: Any) -> list[SavedPayment]:
         if not isinstance(entry, dict):
             continue
         kind = next((str(entry[k]) for k in ("type", "method", "name", "brand") if entry.get(k)), "")
-        digits = entry.get("lastDigits") or entry.get("last4") or entry.get("lastFourDigits")
+        digits = last_digits(entry)
         method_id = entry.get("id") or entry.get("paymentMethodId") or entry.get("cardTokenId")
         payments.append(SavedPayment(kind, str(digits) if digits else None, str(method_id) if method_id else None))
     return payments

@@ -33,6 +33,17 @@ def dicts_with(obj: Any, key: str) -> list[dict]:
     return [d for d, _ in walk(obj) if key in d]
 
 
+def cart_id_of(data: Any) -> str | None:
+    """The cart id in a createCart/getCart response."""
+    value = first_value(data, "cartId") or first_value(data, "id")
+    return str(value) if value else None
+
+
+def last_digits(card: dict) -> Any:
+    """A saved card's last digits, under whichever name the response uses."""
+    return card.get("lastDigits") or card.get("last4") or card.get("lastFourDigits")
+
+
 def as_number(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
