@@ -9,7 +9,7 @@ places the order only when the user clicks **Confirmar pedido**.
 ## Run it
 
 ```bash
-cp .env.example .env      # fill IFOOD_CLIENT_ID and GEMINI_API_KEY
+cp .env.example .env      # fill IFOOD_CLIENT_ID and OPENROUTER_API_KEY
 uv sync
 uv run uvicorn app.main:app --port 8000
 ```
@@ -30,9 +30,9 @@ Tests (offline, fake iFood + scripted LLM): `uv run pytest` · Lint: `uvx ruff c
 |---|---|
 | Login | Required before anything. Messages typed before login are kept and replayed after it |
 | Delivery address | Right after login: `listAddresses`, the user picks where they are now (button or text). "Trocar endereço" later redoes the comparison |
-| Dish, servings, allergies | Gemini (one call per user message, JSON output, one question at a time, quick-reply chips) |
-| Recipe → pantry | The recipe card comes first (numbered ingredient checklist + steps), then "what do you already have?". Numbers ("1, 3"), "não tenho nenhum" and "tenho todos" are parsed in code; names go through Gemini. Only the missing ingredients are searched |
-| Store comparison | Code: one `searchOffers` per ingredient across open GROCERIES stores, top `MAX_STORES` by coverage, gap-filling searches inside each of them, then **one** Gemini call to match products, round quantities up and label them compatible / uncertain / avoid for the user's restrictions |
+| Dish, servings, allergies | LLM via OpenRouter (one call per user message, JSON-schema output, one question at a time, quick-reply chips) |
+| Recipe → pantry | The recipe card comes first (numbered ingredient checklist + steps), then "what do you already have?". Numbers ("1, 3"), "não tenho nenhum" and "tenho todos" are parsed in code; names go through the LLM. Only the missing ingredients are searched |
+| Store comparison | Code: one `searchOffers` per ingredient across open GROCERIES stores, top `MAX_STORES` by coverage, gap-filling searches inside each of them, then **one** LLM call to match products, round quantities up and label them compatible / uncertain / avoid for the user's restrictions |
 | Cart | Code: `createCart` (items with `options: []`), or `getCart` + add/update/remove when that store already has a cart → `getCartDeliveryMethods` → `setCartDelivery` (ASAP) |
 | Payment | `listPaymentMethods` → the user picks (card token only for saved cards) → `setCartPayment` |
 | Voucher | `listVouchers` → the user picks one or "sem cupom" → `setVoucher` (code + campaignId from the list) |
@@ -67,6 +67,10 @@ Code map: `app/main.py` (web + popup login), `app/agent.py` (conversation state 
 - Sessions live in memory: a page reload keeps the whole conversation, a server restart doesn't
   (log in again).
 - **Grocery items are added with `options: []`** without calling `getItem` first; any non-empty
-  option list is rejected by the guard unless its IDs came from `getItem`. Gemini free tier is ~10 requests/minute.
-- **Gemini fallback chain** (`GEMINI_MODELS`): each model gets `GEMINI_TIMEOUT` seconds (45 s for
-  product matching); on a timeout or any API error (overload, 429, 404) the next model answers.
+  option list is rejected by the guard unless its IDs came from `getItem`.
+- **LLM fallback chain** (`OPENROUTER_MODELS`): each model gets `LLM_TIMEOUT` seconds (45 s for
+  product matching); on a timeout, any API error (overload, 429, no provider) or invalid JSON the
+  next model answers. Models must support JSON-schema output (`structured_outputs` on
+  openrouter.ai/models). `:free` models are rate-limited (per minute and per day; higher daily
+  limit once the account has bought credits) and may log prompts; switch to a paid model by
+  editing `OPENROUTER_MODELS`, no code change.

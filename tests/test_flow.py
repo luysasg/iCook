@@ -1,13 +1,12 @@
 """Offline tests: a fake iFood MCP (shapes based on a real searchOffers response) and a scripted LLM."""
 
-import asyncio
+import json
 import re
 import time
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 
+import httpx
 import pytest
-from google.genai import errors
 
 from app import agent, auth, config, ifood, llm, prompts, shopping
 from app.guard import Guard, GuardError
@@ -494,48 +493,47 @@ async def test_no_saved_address(fake, monkeypatch):
     assert scripted.histories == [] and "app do iFood" in out[-1]["text"]
 
 
-class FakeModels:
-    """Stands in for client.aio.models; each model name has a scripted behaviour."""
+def openrouter_with(monkeypatch, behaviour):
+    """Fake OpenRouter: each model name maps to an HTTP status, "slow", or the message content."""
+    requests = []
 
-    def __init__(self, behaviour):
-        self.behaviour = behaviour
-        self.tried = []
-
-    async def generate_content(self, model, contents, config):
-        self.tried.append(model)
-        result = self.behaviour[model]
+    def handler(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        result = behaviour[body["model"]]
         if result == "slow":
-            await asyncio.sleep(1)
-        if isinstance(result, Exception):
-            raise result
-        return SimpleNamespace(text=result)
+            raise httpx.ReadTimeout("no answer", request=request)
+        if isinstance(result, int):
+            return httpx.Response(result, json={"error": {"code": result, "message": "nope"}})
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": result}}]})
+
+    monkeypatch.setattr(llm, "_client", httpx.AsyncClient(base_url="http://fake", transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(config, "LLM_MODELS", list(behaviour))
+    return requests
 
 
-def gemini_with(monkeypatch, behaviour):
-    models = FakeModels(behaviour)
-    monkeypatch.setattr(llm, "_client", SimpleNamespace(aio=SimpleNamespace(models=models)))
-    monkeypatch.setattr(config, "GEMINI_MODELS", list(behaviour))
-    return models
-
-
-async def test_gemini_falls_back_to_the_next_model(monkeypatch):
-    models = gemini_with(
+async def test_llm_falls_back_to_the_next_model(monkeypatch):
+    requests = openrouter_with(
         monkeypatch,
-        {
-            "overloaded": errors.ServerError(503, {"error": {"message": "The model is overloaded."}}),
-            "slow": "slow",
-            "ok": '{"reply": "oi", "action": "none"}',
-        },
+        {"overloaded": 503, "slow": "slow", "chatty": "not json", "ok": '```json\n{"reply": "oi", "action": "none"}\n```'},
     )
-    assert await llm.generate_json("sys", "oi", {}, timeout=0.05) == {"reply": "oi", "action": "none"}
-    assert models.tried == ["overloaded", "slow", "ok"]
+    assert await llm.generate_json("sys", "oi", {"type": "object"}, timeout=0.05) == {"reply": "oi", "action": "none"}
+    assert [r["model"] for r in requests] == ["overloaded", "slow", "chatty", "ok"]
+    # JSON-schema output, only from providers that support it.
+    assert requests[-1]["response_format"]["json_schema"]["schema"] == {"type": "object"}
+    assert requests[-1]["provider"] == {"require_parameters": True}
+    assert requests[-1]["messages"] == [{"role": "system", "content": "sys"}, {"role": "user", "content": "oi"}]
 
 
-async def test_gemini_rate_limited_everywhere(monkeypatch):
-    quota = errors.ClientError(429, {"error": {"message": "Resource exhausted"}})
-    gemini_with(monkeypatch, {"a": quota, "b": quota})
+async def test_llm_rate_limited_everywhere(monkeypatch):
+    openrouter_with(monkeypatch, {"a": 429, "b": 429})
     with pytest.raises(llm.RateLimited):
         await llm.generate_json("sys", "oi", {})
+
+
+def test_history_roles_map_to_chat_roles():
+    history = [{"role": "user", "text": "oi"}, {"role": "model", "text": "olá"}]
+    assert llm.to_contents(history) == [{"role": "user", "content": "oi"}, {"role": "assistant", "content": "olá"}]
 
 
 def test_payment_options_come_from_the_list():
