@@ -62,16 +62,25 @@ async def _token_request(data: dict[str, str]) -> Tokens:
     data = {**data, "client_id": config.IFOOD_CLIENT_ID, "resource": config.IFOOD_MCP_URL}
     if config.IFOOD_CLIENT_SECRET:
         data["client_secret"] = config.IFOOD_CLIENT_SECRET
-    async with httpx.AsyncClient(timeout=TOKEN_REQUEST_TIMEOUT) as http:
-        response = await http.post(f"{config.IFOOD_AUTH_URL}/token", data=data, headers={"Accept": "application/json"})
+    try:
+        async with httpx.AsyncClient(timeout=TOKEN_REQUEST_TIMEOUT) as http:
+            response = await http.post(
+                f"{config.IFOOD_AUTH_URL}/token", data=data, headers={"Accept": "application/json"}
+            )
+    except httpx.HTTPError as e:
+        raise AuthError(f"token endpoint unreachable: {e}") from e
     if response.status_code != 200:
         raise AuthError(f"token endpoint returned {response.status_code}: {response.text[:500]}")
-    body = response.json()
-    return Tokens(
-        access_token=body["access_token"],
-        refresh_token=body.get("refresh_token"),
-        expires_at=time.time() + int(body.get("expires_in", DEFAULT_TOKEN_LIFETIME_SECONDS)),
-    )
+    # Callers only handle AuthError: a malformed 200 must not surface as a KeyError/ValueError.
+    try:
+        body = response.json()
+        return Tokens(
+            access_token=body["access_token"],
+            refresh_token=body.get("refresh_token"),
+            expires_at=time.time() + int(body.get("expires_in", DEFAULT_TOKEN_LIFETIME_SECONDS)),
+        )
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
+        raise AuthError(f"unusable token response: {response.text[:500]}") from e
 
 
 async def exchange_code(code: str, code_verifier: str) -> Tokens:
