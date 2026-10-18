@@ -17,10 +17,17 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import auth, config, ifood, llm, prompts, shopping, user
+from . import auth, config, ifood, llm, prompts, shopping, tracking, user, views
 from .guard import Guard, GuardedClient
 from .ifood import IFoodError
 from .jsonutil import brl, first_value
+from .recipe import (
+    Recipe,
+    parse_ingredients,
+    parse_pantry_answer,
+    parse_recipe,
+    valid_document,
+)
 
 log = logging.getLogger("agent")
 
@@ -60,30 +67,6 @@ MAX_CHIP_CHARS = 30
 # iFood error text shown to the user is cut to this length.
 ERROR_DETAIL_MAX_CHARS = 300
 
-# Progress steps of the tracker card. The status text itself is shown verbatim from trackOrder.
-ORDER_STEPS = ["Recebido", "Confirmado", "Em preparo", "A caminho", "Entregue"]
-STEP_OF_CODE = {
-    "PLACED": 0,
-    "CONFIRMED": 1,
-    "PREPARATION_STARTED": 2,
-    "READY_TO_PICKUP": 2,
-    "DISPATCHED": 3,
-    "ORDER_LATE": 3,
-    "DELIVERY_ARRIVED_AT_DESTINATION": 3,
-    "CONCLUDED": 4,
-}
-FINAL_CODES = ("CONCLUDED", "CANCELLED")
-DEFAULT_POLL_SECONDS = 30
-MIN_POLL_SECONDS = 10
-MAX_POLL_SECONDS = 600
-DRY_RUN_STATUSES = [
-    ("PLACED", "[Simulação] Pedido recebido pelo iFood."),
-    ("CONFIRMED", "[Simulação] O mercado confirmou o pedido."),
-    ("PREPARATION_STARTED", "[Simulação] O mercado está separando seus itens."),
-    ("DISPATCHED", "[Simulação] O pedido saiu para entrega."),
-    ("CONCLUDED", "[Simulação] Pedido entregue."),
-]
-
 # Actions whose result the system shows itself: their reply text is filler and is dropped.
 SYSTEM_ACTIONS = {
     "choose_address", "change_address", "show_recipe", "set_pantry", "search_stores", "choose_store",
@@ -93,35 +76,6 @@ SYSTEM_ACTIONS = {
 
 class NotConnected(Exception):
     pass
-
-
-@dataclass
-class Recipe:
-    title: str
-    description: str
-    servings: int | None
-    ingredients: list[shopping.Ingredient]
-    steps: list[str]
-    have: list[int] = field(default_factory=list)  # ingredient numbers the user already has
-
-    def view(self) -> dict[str, Any]:
-        return {
-            "title": self.title,
-            "description": self.description,
-            "servings": self.servings,
-            "ingredients": [
-                {"number": n, "name": i.name, "amount": f"{i.quantity:g} {i.unit}"}
-                for n, i in enumerate(self.ingredients, 1)
-            ],
-            "steps": self.steps,
-            "have": self.have,
-        }
-
-    def as_text(self) -> str:
-        lines = [f"Receita: {self.title} — {self.description}", "Ingredientes:"]
-        lines += [f"{n}. {i.label()}" for n, i in enumerate(self.ingredients, 1)]
-        lines += ["Modo de preparo:"] + [f"{n}. {step}" for n, step in enumerate(self.steps, 1)]
-        return "\n".join(lines)
 
 
 @dataclass
@@ -351,52 +305,6 @@ def _state_block(s: Session) -> str:
     return "\n".join(lines)
 
 
-def _parse_ingredients(raw: Any) -> list[shopping.Ingredient]:
-    items = []
-    for entry in raw if isinstance(raw, list) else []:
-        try:
-            items.append(
-                shopping.Ingredient(
-                    name=str(entry["name"]).strip(),
-                    search_term=str(entry.get("search_term") or entry["name"]).strip(),
-                    quantity=float(entry.get("quantity") or 1),
-                    unit=str(entry.get("unit") or "unidade").strip(),
-                )
-            )
-        except (KeyError, TypeError, ValueError):
-            log.warning("ignoring malformed list entry: %r", entry)
-    return items
-
-
-def _parse_recipe(raw: Any) -> Recipe | None:
-    if not isinstance(raw, dict):
-        return None
-    ingredients = _parse_ingredients(raw.get("ingredients"))
-    if not ingredients:
-        return None
-    servings = raw.get("servings")
-    return Recipe(
-        title=str(raw.get("title") or "Receita").strip(),
-        description=str(raw.get("description") or "").strip(),
-        servings=servings if isinstance(servings, int) and servings > 0 else None,
-        ingredients=ingredients,
-        steps=[str(step).strip() for step in raw.get("steps") or [] if str(step).strip()],
-    )
-
-
-def parse_pantry_answer(text: str, count: int) -> list[int] | None:
-    """Ingredient numbers from "1, 3 e 5" / "nenhum" / "todos"; None when it needs the LLM (names)."""
-    normalized = text.strip().lower().rstrip(".!")
-    if re.fullmatch(r"(n[aã]o tenho )?(nenhum|nenhuma|nada)( deles| delas)?", normalized):
-        return []
-    if re.fullmatch(r"(tenho )?(todos|todas|tudo)( eles| elas)?", normalized):
-        return list(range(1, count + 1))
-    numbers = re.sub(r"^(j[aá] )?tenho:?\s*", "", normalized)
-    if re.fullmatch(r"[\d\s,;e.]+", numbers) and re.search(r"\d", numbers):
-        return sorted({n for n in map(int, re.findall(r"\d+", numbers)) if 1 <= n <= count})
-    return None
-
-
 # ---------------------------------------------------------------- entry points
 
 
@@ -439,60 +347,74 @@ async def handle_message(s: Session, text: str, heard: bool = False) -> list[dic
         return [s.say("Tive um probleminha para pensar na resposta. Pode repetir?", remember=False)]
     log.info("decision: %s", s.redact(json.dumps(decision, ensure_ascii=False)))
 
-    out = []
-    if isinstance(decision.get("servings"), int) and decision["servings"] > 0:
-        s.servings = decision["servings"]
-    if isinstance(decision.get("restrictions"), str) and decision["restrictions"].strip():
-        restrictions = decision["restrictions"].strip()
-        s.restrictions = None if restrictions.lower().rstrip(".") in NO_RESTRICTIONS else restrictions
+    _apply_preferences(s, decision)
     action = decision.get("action", "none")
-    reply = str(decision.get("reply") or "").strip()
-    # The system shows the result of an action itself; a reply there is just filler.
-    if reply and action not in SYSTEM_ACTIONS:
-        chips = [str(c).strip() for c in decision.get("quick_replies") or [] if str(c).strip()][:MAX_CHIPS]
-        out.append(s.say(reply, data={"chips": chips} if chips else None))
+    out = _reply(s, decision, action)
 
     if s.phase == "address":
         if action == "choose_address" and isinstance(decision.get("address_number"), int):
             out += await choose_address(s, decision["address_number"] - 1)
         return out or [s.say("Antes de tudo, escolha o endereço de entrega na lista acima. 📍", remember=False)]
 
+    out += await _run_action(s, action, decision, replied=bool(out))
+    if not out:
+        out.append(s.say("Não entendi bem. Pode dizer de outro jeito? 🙂", remember=False))
+    return out
+
+
+def _apply_preferences(s: Session, decision: dict[str, Any]) -> None:
+    """Servings and restrictions the LLM picked up from the conversation."""
+    if isinstance(decision.get("servings"), int) and decision["servings"] > 0:
+        s.servings = decision["servings"]
+    if isinstance(decision.get("restrictions"), str) and decision["restrictions"].strip():
+        restrictions = decision["restrictions"].strip()
+        s.restrictions = None if restrictions.lower().rstrip(".") in NO_RESTRICTIONS else restrictions
+
+
+def _reply(s: Session, decision: dict[str, Any], action: str) -> list[dict]:
+    reply = str(decision.get("reply") or "").strip()
+    # The system shows the result of an action itself; a reply there is just filler.
+    if not reply or action in SYSTEM_ACTIONS:
+        return []
+    chips = [str(c).strip() for c in decision.get("quick_replies") or [] if str(c).strip()][:MAX_CHIPS]
+    return [s.say(reply, data={"chips": chips} if chips else None)]
+
+
+async def _run_action(s: Session, action: str, decision: dict[str, Any], replied: bool) -> list[dict]:
+    """The step the LLM chose, when the current state allows it ([] = nothing to do)."""
     number_key = {"choose_store": "store_number", "choose_payment": "payment_number",
                   "choose_voucher": "voucher_number"}.get(action, "")
     number = decision.get(number_key) if isinstance(decision.get(number_key), int) else None
     if action == "change_address" and s.phase != "ordered":
-        out += await ask_address(s)
-    elif action == "show_recipe" and (recipe := _parse_recipe(decision.get("recipe"))):
-        out += show_recipe(s, recipe)
-    elif action == "set_pantry" and s.phase == "pantry" and s.recipe:
+        return await ask_address(s)
+    if action == "show_recipe" and (recipe := parse_recipe(decision.get("recipe"))):
+        return show_recipe(s, recipe)
+    if action == "set_pantry" and s.phase == "pantry" and s.recipe:
         have = [n for n in decision.get("have_ingredients") or [] if isinstance(n, int)]
-        out += await apply_pantry(s, have)
-    elif action == "search_stores":
-        if items := _parse_ingredients(decision.get("shopping_list")):
+        return await apply_pantry(s, have)
+    if action == "search_stores":
+        if items := parse_ingredients(decision.get("shopping_list")):
             s.shopping_list = items
         if not s.shopping_list:
-            out.append(s.say("Antes de buscar, preciso fechar a receita com você. 🙂"))
-        elif s.address is None:
-            out += await ask_address(s)
-        else:
-            out += await search_stores(s)
-    elif action == "choose_store" and s.options and number is not None:
-        out += await choose_store(s, number - 1)
-    elif action == "choose_payment" and s.payment_options and number is not None:
-        out += await choose_payment(s, number - 1)
-    elif action == "choose_voucher" and s.phase == "voucher" and number is not None:
-        out += await choose_voucher(s, number - 1 if number > 0 else None)
-    elif action == "track_order" and s.order_id:
-        out += await track_order(s)
-    elif action == "order_details" and s.order_id:
-        out += await order_details(s)
-    elif action == "restart":
+            return [s.say("Antes de buscar, preciso fechar a receita com você. 🙂")]
+        if s.address is None:
+            return await ask_address(s)
+        return await search_stores(s)
+    if action == "choose_store" and s.options and number is not None:
+        return await choose_store(s, number - 1)
+    if action == "choose_payment" and s.payment_options and number is not None:
+        return await choose_payment(s, number - 1)
+    if action == "choose_voucher" and s.phase == "voucher" and number is not None:
+        return await choose_voucher(s, number - 1 if number > 0 else None)
+    if action == "track_order" and s.order_id:
+        return await track_order(s)
+    if action == "order_details" and s.order_id:
+        return await order_details(s)
+    if action == "restart":
         s.start_new_order()
-        if not out:
-            out.append(s.say(prompts.ASK_CRAVING, data={"chips": await _craving_chips(s)}))
-    if not out:
-        out.append(s.say("Não entendi bem. Pode dizer de outro jeito? 🙂", remember=False))
-    return out
+        if not replied:
+            return [s.say(prompts.ASK_CRAVING, data={"chips": await _craving_chips(s)})]
+    return []
 
 
 async def resume(s: Session) -> list[dict]:
@@ -645,7 +567,7 @@ async def ask_address(s: Session, intro: str = "") -> list[dict]:
             s.say(
                 f"{intro}Onde você está agora? Escolha o endereço de entrega:",
                 kind="addresses",
-                data={"options": _options_view([a.label for a in s.addresses])},
+                data={"options": views.options_view([a.label for a in s.addresses])},
                 remember=False,
             )
         ]
@@ -746,7 +668,7 @@ async def search_stores(s: Session) -> list[dict]:
             s.say(
                 text,
                 kind="stores",
-                data=_stores_view(s, not_found),
+                data=views.stores_view(s.options, s.shopping_list, s.restrictions, not_found),
                 history_text=f"{text}\n{summary}\nQual mercado você prefere?",
             )
         ]
@@ -830,7 +752,7 @@ async def choose_payment(s: Session, index: int, from_button: bool = False) -> l
             s.say(
                 text,
                 kind="vouchers",
-                data={"options": _options_view([v.label for v in s.vouchers])},
+                data={"options": views.options_view([v.label for v in s.vouchers])},
                 history_text=f"{text}\n{_numbered([v.label for v in s.vouchers])}\n0. Sem cupom",
             )
         ]
@@ -865,18 +787,7 @@ async def _review(s: Session, client: GuardedClient) -> list[dict]:
     )
     s.phase = "checkout"
     text = "Confira o resumo. Se estiver tudo certo, toque em **Confirmar pedido**."
-    return [s.say(text, kind="summary", data=_checkout_view(s.checkout))]
-
-
-def valid_document(text: str) -> str | None:
-    """CPF (11 digits), CNPJ (14 digits) or a passport number (foreign accounts)."""
-    digits = re.sub(r"\D", "", text)
-    if len(digits) in (11, 14) and not re.search(r"[A-Za-z]", text):
-        return digits
-    passport = re.sub(r"[\s.-]", "", text).upper()
-    if re.fullmatch(r"(?=.*[A-Z])(?=.*\d)[A-Z0-9]{6,9}", passport):
-        return passport
-    return None
+    return [s.say(text, kind="summary", data=views.checkout_view(s.checkout))]
 
 
 async def confirm_order(s: Session, document: str | None = None) -> list[dict]:
@@ -945,7 +856,7 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
             if s.short_code:
                 text += f" Código: **{s.short_code}**."
             out = [s.say(text, kind="order", data={"order_id": s.order_id, "short_code": s.short_code})]
-            tracker = _tracker_view(s, await client.call("trackOrder", {"orderId": s.order_id}))
+            tracker = tracking.tracker_view(s.order_id, s.short_code, await client.call("trackOrder", {"orderId": s.order_id}))
             out.append(s.say("", kind="tracker", data=tracker, remember=False))
             return out
 
@@ -956,40 +867,10 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
     )
 
 
-def _poll_seconds(hints: dict[str, Any]) -> int:
-    """agentHints.retryMessage says when to poll again (e.g. "retry in 30 seconds")."""
-    message = str(hints.get("retryMessage") or "")
-    match = re.search(r"(\d+)\s*(s\b|sec|seg|min)", message, re.IGNORECASE)
-    if not match:
-        return DEFAULT_POLL_SECONDS
-    seconds = int(match.group(1)) * (60 if match.group(2).lower().startswith("min") else 1)
-    return max(MIN_POLL_SECONDS, min(seconds, MAX_POLL_SECONDS))
-
-
-def _tracker_view(s: Session, data: dict[str, Any]) -> dict[str, Any]:
-    status = data.get("status") if isinstance(data.get("status"), dict) else {}
-    hints = data.get("agentHints") if isinstance(data.get("agentHints"), dict) else {}
-    code = str(status.get("code") or "")
-    stop = hints.get("pollingStop") in (True, "true", "TRUE", "True") or code in FINAL_CODES
-    return {
-        "order_id": s.order_id,
-        "short_code": s.short_code,
-        "code": code,
-        "description": status.get("description") or "Aguardando a primeira atualização do iFood.",
-        "steps": ORDER_STEPS,
-        "step": STEP_OF_CODE.get(code, 0),
-        "cancelled": code == "CANCELLED",
-        "poll_after": None if stop else _poll_seconds(hints),
-        "dry_run": False,
-    }
-
-
 def _simulated_track(s: Session) -> dict[str, Any]:
-    code, description = DRY_RUN_STATUSES[min(s.dry_run_step, len(DRY_RUN_STATUSES) - 1)]
+    view = tracking.simulated_view(s.order_id, s.short_code, s.dry_run_step)
     s.dry_run_step += 1
-    view = _tracker_view(s, {"status": {"code": code, "description": description},
-                             "agentHints": {"retryMessage": "Poll again in 10 seconds"}})
-    return {**view, "dry_run": True}
+    return view
 
 
 async def track_order(s: Session, refresh: bool = False) -> list[dict]:
@@ -1007,7 +888,7 @@ async def track_order(s: Session, refresh: bool = False) -> list[dict]:
     async def operation() -> list[dict]:
         async with _ifood(s) as client:
             data = await client.call("trackOrder", {"orderId": s.order_id})
-        return show(_tracker_view(s, data))
+        return show(tracking.tracker_view(s.order_id, s.short_code, data))
 
     return await _run(s, operation, "Não consegui consultar o status do pedido agora.")
 
@@ -1036,54 +917,3 @@ async def order_details(s: Session) -> list[dict]:
         return [s.say("\n".join(lines))]
 
     return await _run(s, operation, "Não consegui consultar os detalhes do pedido agora.")
-
-
-# ---------------------------------------------------------------- UI payloads
-
-
-def _eta_label(eta: tuple[int, int] | None) -> str | None:
-    return f"{eta[0]}–{eta[1]} min" if eta else None
-
-
-def _options_view(labels: list[str]) -> list[dict[str, Any]]:
-    """Numbered buttons of a choice card (addresses, vouchers)."""
-    return [{"number": n, "label": label} for n, label in enumerate(labels, 1)]
-
-
-def _stores_view(s: Session, not_found: list[str]) -> dict[str, Any]:
-    return {
-        "not_found": not_found,
-        "restrictions": s.restrictions,
-        "options": [
-            {
-                "number": n,
-                "name": o.name,
-                "rating": f"{o.rating:.1f}" if o.rating else None,
-                "eta": _eta_label(o.eta),
-                "delivery_fee": "Grátis" if o.delivery_fee == 0 else brl(o.delivery_fee),
-                "subtotal": brl(o.subtotal),
-                "total": brl(o.total),
-                "found": len(o.picks),
-                "wanted": len(s.shopping_list),
-                "missing": o.missing,
-                "minimum": brl(o.minimum_order) if o.below_minimum else None,
-                "items": [p.view() for p in o.picks],
-            }
-            for n, o in enumerate(s.options, 1)
-        ],
-    }
-
-
-def _checkout_view(c: shopping.Checkout) -> dict[str, Any]:
-    return {
-        "store": c.store.name,
-        "address": c.address.label,
-        "eta": _eta_label(c.store.eta),
-        "payment": c.payment_label,
-        "voucher": c.voucher_label,
-        "items": c.items,
-        "lines": [{"label": label, "value": value} for label, value in c.lines],
-        "warnings": c.warnings,
-        "missing": c.store.missing,
-        "dry_run": config.DRY_RUN,
-    }

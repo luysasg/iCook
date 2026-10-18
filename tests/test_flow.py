@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app import agent, auth, config, ifood, llm, prompts, shopping, user
+from app import agent, auth, config, ifood, llm, prompts, recipe, shopping, user
 from app.guard import Guard, GuardError
 from app.ifood import IFoodError
 from app.jsonutil import as_number
@@ -672,7 +672,7 @@ async def test_login_resumes_the_interrupted_task(fake):
     ifood_fake, _ = fake
     s = connected_session()
     s.tokens = None  # disconnected mid-conversation
-    s.shopping_list = shopping_list_items = agent._parse_ingredients(SHOPPING_LIST[:1])
+    s.shopping_list = shopping_list_items = recipe.parse_ingredients(SHOPPING_LIST[:1])
     out = await agent.search_stores(s)
     assert out[-1]["kind"] == "login" and s.pending is not None
     assert "searchOffers" not in ifood_fake.tools()
