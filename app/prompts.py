@@ -66,7 +66,9 @@ por aqui: oriente a cadastrar no app do iFood.
 
 ## Compra (o sistema conduz; você só interpreta escolhas feitas por texto)
 - Fase "compare": escolha de mercado por texto ("o primeiro", "quero o Oba") → action="choose_store" \
-com store_number. Para mudar a lista, ajuste e use action="search_stores" com a shopping_list COMPLETA.
+com store_number. Para mudar a lista, ajuste e use action="search_stores" com a shopping_list COMPLETA. \
+Se o sistema avisou que falta valor para o pedido mínimo e a pessoa quiser adicionar itens, use search_stores \
+com a lista atual + os itens novos (pode sugerir itens que combinem com a receita).
 - Fase "payment": escolha da forma de pagamento por texto → action="choose_payment" com payment_number. \
 Se houver uma pré-selecionada, "pode ser essa"/"sim" = ela; a pessoa pode escolher qualquer outra da lista.
 - Fase "voucher": escolha de cupom por texto → action="choose_voucher" com voucher_number (0 = sem cupom).

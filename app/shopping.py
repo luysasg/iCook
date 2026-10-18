@@ -90,6 +90,11 @@ class StoreOption:
     def below_minimum(self) -> bool:
         return self.minimum_order is not None and self.subtotal < self.minimum_order
 
+    @property
+    def short_of_minimum(self) -> float:
+        """How much the subtotal lacks to reach the store's minimum order (0 = nothing)."""
+        return max((self.minimum_order or 0) - self.subtotal, 0)
+
 
 @dataclass
 class Address:

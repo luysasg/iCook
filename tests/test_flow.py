@@ -19,7 +19,7 @@ OBA = {
     "merchantId": "m-oba",
     "merchantName": "Oba Hortifruti - Pamplona",
     "isOpen": True,
-    "minimumOrderAmount": 60,
+    "minimumOrderAmount": 5,
     "reviewRating": 4.9,
     "straightLineDistanceKm": 0.41,
     "deliveryMethod": {
@@ -398,6 +398,31 @@ async def test_dry_run_never_submits(fake, monkeypatch):
     # Even a direct call is blocked by the guard.
     with pytest.raises(GuardError):
         s.guard.check("submitOrder", {"cartId": "cart-1", "userConsent": True})
+
+
+async def test_store_below_minimum_asks_to_add_items(fake):
+    ifood_fake, scripted = fake
+    s = connected_session()
+    scripted.turns = [
+        {"reply": "", "action": "search_stores", "shopping_list": SHOPPING_LIST},
+        {"reply": "", "action": "search_stores",
+         "shopping_list": SHOPPING_LIST + [{"name": "Cebola", "search_term": "cebola", "quantity": 1, "unit": "kg"}]},
+    ]
+    out = await agent.handle_message(s, "pode buscar")
+    daki = out[-1]["data"]["options"][1]
+    assert daki["name"].startswith("Daki") and daki["minimum"] == "R$ 50,00"  # subtotal R$ 15,18
+
+    out = await agent.choose_store(s, 1, from_button=True)
+    assert "faltam **R$ 34,82**" in out[-1]["text"] and "R$ 50,00" in out[-1]["text"]
+    assert s.phase == "compare" and s.cart_id is None
+    assert "createCart" not in ifood_fake.tools() and "listPaymentMethods" not in ifood_fake.tools()
+    assert "faltam" in s.history[-1]["text"]  # the LLM sees it to help pick what to add
+
+    await agent.handle_message(s, "adiciona mais cebola")
+    assert s.phase == "compare" and len(s.shopping_list) == 4
+
+    out = await agent.choose_store(s, 0)  # Oba is above its minimum: the cart is built
+    assert s.phase == "payment" and "createCart" in ifood_fake.tools()
 
 
 async def test_same_store_resumes_the_cart(fake):

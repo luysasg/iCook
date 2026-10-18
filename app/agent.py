@@ -750,6 +750,13 @@ async def choose_store(s: Session, index: int, from_button: bool = False) -> lis
     store = s.options[index]
     if from_button:
         s.hear(f"Quero o mercado {store.name}")
+    # Below the minimum the order can't go through: no cart yet, the user adds items (search_stores) or picks another.
+    if store.below_minimum:
+        return [s.say(
+            f"O **{store.name}** tem pedido mínimo de **{brl(store.minimum_order)}** e sua lista lá dá "
+            f"{brl(store.subtotal)}: faltam **{brl(store.short_of_minimum)}**. Quer adicionar mais algum item? "
+            "É só me dizer o quê. Se preferir, escolha outro mercado da comparação."
+        )]
 
     async def operation() -> list[dict]:
         assert s.address is not None
