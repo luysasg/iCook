@@ -50,6 +50,11 @@ TOOL_STATUS = {
 THINKING = "Pensando…"
 # getUser fails → no personalization now, one more try in the background after this delay.
 PROFILE_RETRY_SECONDS = 3.0
+# Craving chips (behavior profile or time of day), started in the background when the addresses show up.
+# The reply waits for them however long it takes; failures are retried with this backoff.
+CHIPS_LLM_TIMEOUT = 20.0
+CHIPS_RETRY_SECONDS = 1.0
+CHIPS_RETRY_MAX_SECONDS = 10.0
 
 # Progress steps of the tracker card. The status text itself is shown verbatim from trackOrder.
 ORDER_STEPS = ["Recebido", "Confirmado", "Em preparo", "A caminho", "Entregue"]
@@ -144,6 +149,8 @@ class Session:
     # From getUser, once per session (kept on "Nova conversa"); None = not loaded or failed.
     profile: user.UserProfile | None = None
     profile_retry: asyncio.Task | None = None
+    # Craving chips suggested from the behavior profile, by its behavior text (getUser + address habits).
+    chips_tasks: dict[str, asyncio.Task] = field(default_factory=dict)
     payment_preselected: int | None = None  # index into payment_options
     activity: str = ""  # what is running right now, for the UI status line
     # Interrupted by a disconnection: replayed after the next login.
@@ -284,7 +291,8 @@ def _numbered(options: list[str]) -> str:
 
 
 def _system_prompt(s: Session) -> str:
-    return prompts.AGENT_SYSTEM + (s.profile.prompt_block() if s.profile else "") + _state_block(s)
+    profile = _profile_for(s)
+    return prompts.AGENT_SYSTEM + (profile.prompt_block() if profile else "") + _state_block(s)
 
 
 def _state_block(s: Session) -> str:
@@ -469,7 +477,7 @@ async def handle_message(s: Session, text: str, heard: bool = False) -> list[dic
     elif action == "restart":
         s.start_new_order()
         if not out:
-            out.append(s.say(prompts.ASK_CRAVING, data={"chips": _craving_chips(s)}))
+            out.append(s.say(prompts.ASK_CRAVING, data={"chips": await _craving_chips(s)}))
     if not out:
         out.append(s.say("Não entendi bem. Pode dizer de outro jeito? 🙂", remember=False))
     return out
@@ -531,8 +539,65 @@ def _error_code(e: Exception) -> str:
     return getattr(e, "code", None) or type(e).__name__
 
 
-def _craving_chips(s: Session) -> list[str]:
-    return user.craving_chips(s.profile, prompts.CRAVING_CHIPS, user.now_sp())
+def _profile_for(s: Session, address: shopping.Address | None = None) -> user.UserProfile | None:
+    """getUser profile + the delivery address's habits (listAddresses); None when there is neither."""
+    address = address or s.address
+    if address is None or not address.habits:
+        return s.profile
+    return user.with_address_habits(s.profile, address.habits)
+
+
+def _chips_task(s: Session, profile: user.UserProfile | None) -> tuple[str, asyncio.Task]:
+    """One background suggestion per source, started on first use: the behavior profile (per address),
+    or, with profile=None, the day and time only (per weekday/weekend + shift, nothing about the person)."""
+    now = user.now_sp()
+    if profile and profile.has_behavior:
+        key = "\n".join(profile.behavior_lines())
+        system, context = prompts.CHIPS_SYSTEM, "\n".join(profile.behavior_lines() + [user.now_line(now)])
+    else:
+        key = f"time:{now.weekday() >= 5}:{user.shift_of(now)}"
+        system, context = prompts.CHIPS_TIME_SYSTEM, user.now_line(now)
+    if key not in s.chips_tasks:
+        s.chips_tasks[key] = asyncio.create_task(_suggest_chips(system, context))
+    return key, s.chips_tasks[key]
+
+
+async def _suggest_chips(system: str, context: str) -> list[str] | None:
+    """Dish ideas from behavior lines or the time only (never the name or payments).
+    [] = the profile says nothing about food; None = the LLM failed (try again)."""
+    try:
+        answer = await llm.generate_json(system, context, prompts.CHIPS_SCHEMA, timeout=CHIPS_LLM_TIMEOUT)
+    except llm.LLMError as e:
+        log.warning("craving chips suggestion failed (%s); trying again", type(e).__name__)
+        return None
+    chips: list[str] = []
+    for raw in answer.get("chips") or []:
+        chip = re.sub(r"\s+", " ", str(raw)).strip(" .")
+        if chip and len(chip) <= 30 and chip.lower() not in (c.lower() for c in chips):
+            chips.append(chip)
+    return chips[:4]
+
+
+async def _craving_chips(s: Session) -> list[str]:
+    """Chips from the behavior profile, else from the time (no data, or nothing about food in it).
+
+    No fixed fallback and no time limit: a failed suggestion is retried until the LLM answers.
+    """
+    profile = _profile_for(s)
+    sources = [profile, None] if profile and profile.has_behavior else [None]
+    delay = CHIPS_RETRY_SECONDS
+    while True:
+        for source in sources:
+            s.activity = "Preparando sugestões…"
+            key, task = _chips_task(s, source)
+            chips = await asyncio.shield(task)
+            if chips:
+                return chips
+            if chips is None or source is None:
+                s.chips_tasks.pop(key, None)  # failed (or an empty time answer): ask this source again
+                break  # only "nothing about food" in the profile moves on to the time chips
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, CHIPS_RETRY_MAX_SECONDS)
 
 
 async def _replay_pending(s: Session) -> list[dict]:
@@ -564,6 +629,8 @@ async def ask_address(s: Session, intro: str = "") -> list[dict]:
                     remember=False,
                 )
             ]
+        # The first address is the most likely pick: its chips get ready while the user chooses.
+        _chips_task(s, _profile_for(s, s.addresses[0]))
         return [
             s.say(
                 f"{intro}Onde você está agora? Escolha o endereço de entrega:",
@@ -594,7 +661,7 @@ async def choose_address(s: Session, index: int, from_button: bool = False) -> l
     return [
         s.say(
             f"Combinado, entrega em **{s.address.label}**. 📍\n\n{prompts.ASK_CRAVING}",
-            data={"chips": _craving_chips(s)},
+            data={"chips": await _craving_chips(s)},
         )
     ]
 
@@ -850,7 +917,11 @@ async def _submit(s: Session, document: str | None) -> list[dict]:
                     return [s.say("O iFood pediu um documento para finalizar. Qual o seu **CPF** (só números)? "
                                   "Para contas estrangeiras, o número do passaporte.")]
                 raise
-            s.order_id = str(first_value(result, "orderId") or first_value(result, "id") or "") or None
+            order_id = first_value(result, "orderId") or first_value(result, "id")
+            if not order_id:
+                # Never announce an order iFood didn't confirm with an id.
+                raise IFoodError("submitOrder", "resposta sem orderId")
+            s.order_id = str(order_id)
             s.short_code = first_value(result, "shortCode")
             s.phase = "ordered"
             text = f"Pedido feito no **{checkout.store.name}**! 🎉"

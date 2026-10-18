@@ -6,7 +6,6 @@ WELCOME = (
 )
 LOGIN_REQUIRED = "Antes de tudo, conecte sua conta iFood. 🔐 Eu guardo sua mensagem e continuo daqui."
 ASK_CRAVING = "Me conta: o que você está com vontade de comer ou cozinhar hoje?"
-CRAVING_CHIPS = ["Strogonoff", "Algo rápido", "Massa", "Me dá ideias"]
 ASK_PANTRY = (
     "Quais desses ingredientes você **já tem em casa**? Marque na lista ou responda com os números "
     "(ex.: _1, 3, 5_) ou com os nomes."
@@ -143,6 +142,32 @@ AGENT_SCHEMA = {
         "voucher_number": {"type": "integer", "description": "Número do cupom (começa em 1; 0 = sem cupom)."},
     },
     "required": ["reply", "action"],
+}
+
+CHIPS_SYSTEM = """\
+Você sugere ideias de pratos para uma pessoa cozinhar em casa com compras de mercado no iFood. \
+Com base SOMENTE no perfil de hábitos abaixo e no horário atual, devolva até 4 sugestões curtas \
+(2 a 4 palavras cada, em português do Brasil, sem emoji), como botões de resposta rápida \
+(ex.: "Salada leve de frango", "Massa rápida", "Pizza caseira").
+- Reflita o que o perfil diz (tipos de comida, ocasiões, dias e horários); considere o horário atual.
+- Nunca invente preferências que o perfil não sustenta, nem suponha restrições alimentares.
+- Se o perfil não disser nada útil sobre comida, devolva chips vazio.
+"""
+
+CHIPS_TIME_SYSTEM = """\
+Você sugere ideias de pratos para uma pessoa cozinhar em casa com compras de mercado no iFood. \
+Não há nenhuma informação sobre a pessoa: use SOMENTE o dia da semana e o horário atuais. \
+Devolva 4 sugestões curtas (2 a 4 palavras cada, em português do Brasil, sem emoji), como botões de \
+resposta rápida, adequadas ao momento (ex.: café da manhã de manhã, algo leve e rápido no almoço de \
+dia útil, algo mais elaborado no fim de semana, jantar prático à noite).
+- Varie entre tipos de prato; uma delas pode ser "Me dá ideias".
+- Não suponha gostos, dieta, restrições nem para quantas pessoas é.
+"""
+
+CHIPS_SCHEMA = {
+    "type": "object",
+    "properties": {"chips": {"type": "array", "items": {"type": "string"}, "description": "Até 4 sugestões."}},
+    "required": ["chips"],
 }
 
 PICKER_SYSTEM = """\

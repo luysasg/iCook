@@ -67,6 +67,11 @@ class IFoodMCP:
             raise Unauthorized
         if result.is_error:
             raise IFoodError(tool, text or json.dumps(data, ensure_ascii=False))
+        # Failures can also come inline, without isError: {"success": false, "error": {code, message}}.
+        if isinstance(error, dict) or (isinstance(data, dict) and data.get("success") is False):
+            details = error if isinstance(error, dict) else {}
+            summary = ": ".join(str(v) for v in (details.get("code"), details.get("message")) if v)
+            raise IFoodError(tool, summary or text or "erro sem detalhes")
         return data
 
 

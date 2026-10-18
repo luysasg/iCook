@@ -25,6 +25,8 @@ OFFLINE_PAYMENT_WORDS = ("CASH", "DINHEIRO", "OFFLINE", "NA ENTREGA")
 CARD_WORDS = ("CARD", "CREDIT", "DEBIT", "CRÉDITO", "CREDITO", "DÉBITO", "DEBITO", "CARTÃO", "CARTAO")
 SUMMARY_SECTIONS = ("summary", "totals", "totalizers", "prices", "values", "amounts")
 ALLERGEN_LABELS = ("compatible", "uncertain", "avoid")
+# Per-address order analytics from listAddresses (on the address or under usagePattern).
+ADDRESS_HABIT_KEYS = ("topMerchantTypes", "topWeekDayShift", "ordersByMerchantTypeWeekdayAndShift", "ordersByDay")
 
 
 @dataclass
@@ -95,6 +97,7 @@ class Address:
     label: str
     latitude: float
     longitude: float
+    habits: dict[str, Any] = field(default_factory=dict)  # ADDRESS_HABIT_KEYS present on this address
 
 
 @dataclass
@@ -151,7 +154,9 @@ def parse_addresses(data: dict[str, Any]) -> list[Address]:
             label = f"{alias.title()} ({street})"
         else:
             label = alias or street or "endereço salvo"
-        addresses.append(Address(str(entry["addressId"]), label, latitude, longitude))
+        usage = entry.get("usagePattern") if isinstance(entry.get("usagePattern"), dict) else {}
+        habits = {k: v for k in ADDRESS_HABIT_KEYS if (v := entry.get(k, usage.get(k))) not in (None, "", [], {})}
+        addresses.append(Address(str(entry["addressId"]), label, latitude, longitude, habits))
     return addresses
 
 

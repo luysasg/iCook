@@ -1,5 +1,6 @@
 """Offline tests: a fake iFood MCP (shapes based on a real searchOffers response) and a scripted LLM."""
 
+import asyncio
 import json
 import re
 import time
@@ -73,6 +74,7 @@ class FakeIFood:
         self.require_document = require_document
         self.cart_items = []
         self.user = BASIC_USER
+        self.submit_result = {"orderId": "order-1", "shortCode": "ABCD"}
 
     async def call(self, tool, args):
         self.calls.append((tool, args))
@@ -152,7 +154,7 @@ class FakeIFood:
         if tool == "submitOrder":
             if self.require_document and "document" not in args:
                 raise IFoodError(tool, "Missing document: CPF is required to checkout")
-            return {"orderId": "order-1", "shortCode": "ABCD"}
+            return self.submit_result
         if tool == "trackOrder":
             return {
                 "status": {"code": "DISPATCHED", "description": "Merchant released order for delivery."},
@@ -172,14 +174,36 @@ class FakeIFood:
         return [name for name, _ in self.calls]
 
 
+TIME_CHIPS = ["Almoço rápido", "Salada completa", "Me dá ideias"]
+
+
 class ScriptedLLM:
     """Agent turns come from a queue; the product picker always takes the first candidate."""
 
     def __init__(self):
         self.turns = []
         self.histories = []
+        # Answers to the chips prompts: one answer, or a list played in order (the last one repeats);
+        # an exception in it is raised.
+        self.chips = {"chips": []}  # profile-based prompt
+        self.chip_requests = []
+        self.time_chips = {"chips": TIME_CHIPS}  # time-only prompt (no user data)
+        self.time_chip_requests = []
+
+    @staticmethod
+    def _play(answers):
+        answer = (answers.pop(0) if len(answers) > 1 else answers[0]) if isinstance(answers, list) else answers
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     async def generate_json(self, system, contents, schema, temperature=0.5, timeout=None):
+        if system == prompts.CHIPS_TIME_SYSTEM:
+            self.time_chip_requests.append(contents)
+            return self._play(self.time_chips)
+        if system == prompts.CHIPS_SYSTEM:
+            self.chip_requests.append(contents)
+            return self._play(self.chips)
         if system == prompts.PICKER_SYSTEM:
             picks = {}
             for ref in re.findall(r"\[(M\d+-\d+-\d+)\]", contents):
@@ -206,6 +230,7 @@ def fake(monkeypatch):
 
     monkeypatch.setattr(ifood, "connect", connect)
     monkeypatch.setattr(llm, "generate_json", scripted.generate_json)
+    monkeypatch.setattr(agent, "CHIPS_RETRY_SECONDS", 0)  # chip retries don't wait in tests
     return fake_ifood, scripted
 
 
@@ -823,9 +848,7 @@ def test_behavior_data_is_parsed_leniently_and_counts_converted():
         assert private not in block
 
     lunch = user.datetime(2026, 10, 19, 12, 30)  # a Monday
-    assert user.craving_chips(profile, prompts.CRAVING_CHIPS, lunch)[0] == "Algo leve pro almoço"
-    assert user.craving_chips(profile, prompts.CRAVING_CHIPS, lunch.replace(hour=20)) == prompts.CRAVING_CHIPS
-    assert user.craving_chips(None, prompts.CRAVING_CHIPS, lunch) == prompts.CRAVING_CHIPS
+    assert user.now_line(lunch) == "Agora: segunda, 12:30 (almoço)"
     # Partial/odd shapes never break and never invent anything.
     odd = {"data": {"profileData": {"topMerchantTypes": "GROCERIES", "ordersByDay": {"Friday": "x"}}}}
     assert user.parse_user(odd).categories == ["Mercado"] and user.parse_user(odd).patterns == []
@@ -855,3 +878,205 @@ async def test_no_preselection_without_saved_payments(fake):
     await agent.handle_message(s, "pode buscar")
     out = await agent.choose_store(s, 0)
     assert out[-1]["data"]["selected"] is None and "Como você quer pagar?" in out[-1]["text"]
+
+
+# ---------------------------------------------------------------- submitOrder failures
+
+
+async def test_inline_error_is_raised_even_without_is_error():
+    payload = {"success": False, "error": {"code": "CHECKOUT_FAILED", "message": "merchant closed"}}
+    with pytest.raises(IFoodError, match="CHECKOUT_FAILED: merchant closed"):
+        await ifood.IFoodMCP(_MCPClient(payload)).call("submitOrder", {"cartId": "c", "userConsent": True})
+
+
+@pytest.mark.parametrize("answer", [
+    IFoodError("submitOrder", "CHECKOUT_FAILED: merchant closed"),  # what IFoodMCP raises for an inline error
+    {"success": True, "data": {}},  # no orderId
+])
+async def test_failed_submit_never_announces_an_order(fake, answer):
+    ifood_fake, scripted = fake
+    s = connected_session()
+    await to_summary(s, scripted)
+    if isinstance(answer, Exception):
+        async def call(tool, args, original=ifood_fake.call):
+            if tool == "submitOrder":
+                ifood_fake.calls.append((tool, args))
+                raise answer
+            return await original(tool, args)
+        ifood_fake.call = call
+    else:
+        ifood_fake.submit_result = answer
+    out = await agent.confirm_order(s)
+    assert "submitOrder" in ifood_fake.tools()
+    assert s.phase == "checkout" and s.order_id is None
+    assert all("Pedido feito" not in m["text"] for m in s.messages)
+    assert "Não consegui finalizar o pedido" in out[-1]["text"]
+
+
+# ---------------------------------------------------------------- craving chips from the behavior profile
+
+
+async def test_craving_chips_come_from_the_behavior_profile(fake):
+    ifood_fake, scripted = fake
+    ifood_fake.user = BEHAVIOR_USER
+    scripted.chips = {"chips": ["Salada leve de frango", "salada leve de frango", "Wrap rápido",
+                                "Um nome de prato comprido demais para caber no botão", "Omelete", "Sopa", "Extra"]}
+    s = connected_session(address=None)
+    await agent.resume(s)
+    out = await agent.choose_address(s, 0, from_button=True)
+    assert out[-1]["data"]["chips"] == ["Salada leve de frango", "Wrap rápido", "Omelete", "Sopa"]
+    # Only behavior data reaches that prompt: no name, contact data or payments.
+    [context] = scripted.chip_requests
+    assert "Pede mercado no almoço" in context and "Agora:" in context
+    for private in ("Maria", "maria@", "5511", "9999", "Pix"):
+        assert private not in context
+
+
+async def test_no_user_data_chips_come_from_the_time_only(fake):
+    _, scripted = fake
+    scripted.time_chips = {"chips": ["Almoço rápido", "Salada completa", "Me dá ideias"]}
+    s = connected_session(address=None)
+    await agent.resume(s)  # BASIC tier: name only, no address habits
+    out = await agent.choose_address(s, 0, from_button=True)
+    assert out[-1]["data"]["chips"] == ["Almoço rápido", "Salada completa", "Me dá ideias"]
+    assert scripted.chip_requests == []  # the behavior prompt is never used without data
+    [context] = scripted.time_chip_requests  # just the clock: nothing about the person
+    assert context.startswith("Agora:") and "\n" not in context and "Maria" not in context
+    # Same moment, same suggestion: a new craving question doesn't call the LLM again.
+    await agent.new_conversation(s)
+    await agent.choose_address(s, 0, from_button=True)
+    assert len(scripted.time_chip_requests) == 1
+
+
+async def test_time_only_chips_are_retried_until_they_come(fake):
+    _, scripted = fake
+    scripted.time_chips = [llm.LLMError("down"), {"chips": []}, llm.RateLimited("429"), {"chips": ["Jantar prático"]}]
+    s = connected_session(address=None)
+    await agent.resume(s)
+    out = await agent.choose_address(s, 0, from_button=True)
+    assert out[-1]["data"]["chips"] == ["Jantar prático"]  # no fixed fallback: it kept trying
+    assert len(scripted.time_chip_requests) == 4
+
+
+async def test_time_only_prompt_is_not_used_when_there_is_user_data(fake):
+    ifood_fake, scripted = fake
+    ifood_fake.user = BEHAVIOR_USER
+    scripted.chips = {"chips": ["Wrap rápido"]}
+    s = connected_session(address=None)
+    await agent.resume(s)
+    await agent.choose_address(s, 0, from_button=True)
+    assert scripted.time_chip_requests == [] and len(scripted.chip_requests) == 1
+
+
+async def test_failed_profile_suggestion_is_retried(fake):
+    ifood_fake, scripted = fake
+    ifood_fake.user = BEHAVIOR_USER
+    scripted.chips = [llm.LLMError("down"), {"chips": ["Wrap rápido"]}]
+    s = connected_session(address=None)
+    await agent.resume(s)
+    out = await agent.choose_address(s, 0, from_button=True)
+    assert out[-1]["data"]["chips"] == ["Wrap rápido"]
+    assert len(scripted.chip_requests) == 2
+
+
+async def test_profile_without_food_info_uses_the_time_chips(fake):
+    ifood_fake, scripted = fake
+    ifood_fake.user = BEHAVIOR_USER
+    scripted.chips = {"chips": []}  # "nothing useful about food" in the profile
+    s = connected_session(address=None)
+    await agent.resume(s)
+    out = await agent.choose_address(s, 0, from_button=True)
+    assert out[-1]["data"]["chips"] == TIME_CHIPS
+    assert len(scripted.chip_requests) == 1  # an empty profile answer is final, not retried
+
+
+async def test_slow_suggestion_is_waited_for(fake, monkeypatch):
+    ifood_fake, _ = fake
+    ifood_fake.user = BEHAVIOR_USER
+    release = asyncio.Event()
+
+    async def slow(*args, **kwargs):
+        await release.wait()
+        return {"chips": ["Wrap rápido"]}
+
+    monkeypatch.setattr(llm, "generate_json", slow)
+    s = connected_session(address=None)
+    await agent.resume(s)
+    reply = asyncio.create_task(agent.choose_address(s, 0, from_button=True))
+    await asyncio.sleep(0.05)
+    assert not reply.done() and s.activity == "Preparando sugestões…"  # no time limit, no fixed list
+    release.set()
+    out = await reply
+    assert out[-1]["data"]["chips"] == ["Wrap rápido"]
+
+
+# ---------------------------------------------------------------- address habits (listAddresses analytics)
+
+HOME_HABITS = {
+    "topMerchantTypes": [{"merchantType": "GROCERIES", "count": "7"}],
+    "topWeekDayShift": "WEEKEND_DINNER",
+    "ordersByMerchantTypeWeekdayAndShift": {"GROCERIES": {"SATURDAY": {"DINNER": "5"}}},
+}
+
+
+def with_home_habits(ifood_fake, monkeypatch, nested=False):
+    original = ifood_fake.call
+
+    async def call(tool, args):
+        result = await original(tool, args)
+        if tool == "listAddresses":
+            home = next(a for a in result["addresses"] if a["addressId"] == "addr-home")
+            home.update({"usagePattern": dict(HOME_HABITS)} if nested else HOME_HABITS)
+        return result
+
+    monkeypatch.setattr(ifood_fake, "call", call)
+
+
+@pytest.mark.parametrize("nested", [False, True])  # fields on the address or under usagePattern (docs example)
+def test_address_habits_are_parsed(nested):
+    entry = {"addressId": "a", "alias": "CASA", "coordinates": {"latitude": 1, "longitude": 2}}
+    entry.update({"usagePattern": dict(HOME_HABITS)} if nested else HOME_HABITS)
+    [address] = shopping.parse_addresses({"addresses": [entry]})
+    assert address.habits == HOME_HABITS
+    merged = user.with_address_habits(user.UserProfile(first_name="Maria"), address.habits)
+    assert merged.categories == ["Mercado (7 pedidos)"]
+    assert merged.patterns == ["fim de semana · jantar", "Mercado · sábado · jantar (5 pedidos)"]
+    assert merged.first_name == "Maria"
+
+
+def test_address_habits_merge_without_repeats_or_mutating_the_profile():
+    profile = user.parse_user(BEHAVIOR_USER)  # already has Mercado (12) and a weekday-lunch pattern
+    merged = user.with_address_habits(profile, HOME_HABITS)
+    assert merged.categories == ["Mercado (12 pedidos)", "Restaurante (3 pedidos)"]
+    assert "fim de semana · jantar" in merged.patterns and "fim de semana · jantar" not in profile.patterns
+    assert user.with_address_habits(None, {}).has_behavior is False
+
+
+async def test_chips_use_the_chosen_address_habits(fake, monkeypatch):
+    ifood_fake, scripted = fake
+    with_home_habits(ifood_fake, monkeypatch)
+    scripted.chips = {"chips": ["Pizza caseira", "Hambúrguer artesanal"]}
+    s = connected_session(address=None)
+    await agent.resume(s)  # BASIC getUser: the behavior comes only from the address
+    await asyncio.gather(*s.chips_tasks.values())  # started for the first (last used) address while the user chooses
+    assert len(scripted.chip_requests) == 1
+    out = await agent.choose_address(s, 0, from_button=True)  # Casa
+    assert out[-1]["data"]["chips"] == ["Pizza caseira", "Hambúrguer artesanal"]
+    [context] = scripted.chip_requests  # the same suggestion, not a second call
+    assert "Mercado (7 pedidos)" in context and "fim de semana · jantar" in context
+    assert "Maria" not in context
+    # The main agent sees the address habits too.
+    assert "Mercado · sábado · jantar (5 pedidos)" in agent._system_prompt(s)
+
+
+async def test_address_without_habits_gets_time_chips(fake, monkeypatch):
+    ifood_fake, scripted = fake
+    with_home_habits(ifood_fake, monkeypatch)
+    s = connected_session(address=None)
+    await agent.resume(s)
+    out = await agent.choose_address(s, 1, from_button=True)  # Trabalho: no analytics
+    assert out[-1]["data"]["chips"] == TIME_CHIPS
+    await asyncio.gather(*s.chips_tasks.values())
+    assert len(scripted.chip_requests) == 1  # only the pre-started one for Casa
+    assert "Perfil da pessoa (do iFood" in agent._system_prompt(s)  # name only from getUser
+    assert "fim de semana" not in agent._system_prompt(s)

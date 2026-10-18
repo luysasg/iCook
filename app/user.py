@@ -1,4 +1,4 @@
-"""getUser → a compact profile for personalization (first name, saved payments, behavior).
+"""getUser (+ listAddresses habits) → a compact profile for personalization (first name, saved payments, behavior).
 
 Only an allow-list leaves the response: email, phone, full name, tax ID and any user ID
 never reach the session, the LLM or the UI. Tiers (from the docs):
@@ -8,7 +8,7 @@ leniently; counts may come as strings and are converted before any math.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -32,7 +32,6 @@ MERCHANT_TYPES = {"GROCERIES": "Mercado", "RESTAURANT": "Restaurante", "PHARMACY
 CATEGORY_KEYS = ("topMerchantTypes", "favoriteCategories", "topCategories", "favoriteMerchantTypes")
 PATTERN_KEYS = ("topWeekDayShift", "topWeekdayShift", "topWeekDayShifts")
 COUNT_TABLE_KEYS = ("ordersByMerchantTypeWeekdayAndShift", "ordersByWeekdayAndShift", "ordersByDay")
-CHIPS_BY_SHIFT = {"almoço": "Algo leve pro almoço", "jantar": "Algo prático pro jantar", "manhã": "Café da manhã"}
 
 
 class ProfileError(Exception):
@@ -60,8 +59,22 @@ class UserProfile:
     payments: list[SavedPayment] = field(default_factory=list)
     categories: list[str] = field(default_factory=list)  # most ordered first, e.g. "Mercado (12 pedidos)"
     patterns: list[str] = field(default_factory=list)  # e.g. "dias úteis · almoço"
-    usual_shifts: list[str] = field(default_factory=list)  # normalized: almoço, jantar...
     persona: str | None = None
+
+    @property
+    def has_behavior(self) -> bool:
+        return bool(self.categories or self.patterns or self.persona)
+
+    def behavior_lines(self) -> list[str]:
+        """Behavior data only (no name, no payments): what the suggestion chips are based on."""
+        lines = []
+        if self.categories:
+            lines.append("Categorias que mais pede: " + ", ".join(self.categories))
+        if self.patterns:
+            lines.append("Dias/horários em que costuma pedir: " + "; ".join(self.patterns))
+        if self.persona:
+            lines.append(f"Resumo de hábitos (iFood): {self.persona}")
+        return lines
 
     def prompt_block(self) -> str:
         """Only what helps the conversation; empty when getUser had nothing useful."""
@@ -70,12 +83,7 @@ class UserProfile:
             lines.append(f"Primeiro nome: {self.first_name}")
         if self.payments:
             lines.append("Pagamentos salvos: " + "; ".join(p.label() for p in self.payments))
-        if self.categories:
-            lines.append("Categorias que mais pede: " + ", ".join(self.categories))
-        if self.patterns:
-            lines.append("Dias/horários em que costuma pedir: " + "; ".join(self.patterns))
-        if self.persona:
-            lines.append(f"Resumo de hábitos (iFood): {self.persona}")
+        lines += self.behavior_lines()
         if not lines:
             return ""
         return "\n## Perfil da pessoa (do iFood; só o que está aqui, nunca invente preferências)\n" + "\n".join(lines)
@@ -95,19 +103,32 @@ def parse_user(result: Any) -> UserProfile:
     behavior = data.get("profileData") if isinstance(data.get("profileData"), dict) else {}
     profile = UserProfile(first_name=first_name(data.get("fullName") or data.get("name")))
     profile.payments = _payments(data.get("paymentMethods"))
-    profile.categories = [
-        f"{_merchant_type(label)} ({count:g} pedidos)" if count is not None else _merchant_type(label)
-        for label, count in _counts(_pick(behavior, data, CATEGORY_KEYS))[:3]
-    ]
-    for label, _ in _counts(_pick(behavior, data, PATTERN_KEYS))[:2]:
-        _add_pattern(profile, label)
-    for path, count in _leaf_counts(_pick(behavior, data, COUNT_TABLE_KEYS))[:3]:
-        _add_pattern(profile, " ".join(path), count)
+    _add_behavior(profile, behavior, data)
     persona = behavior.get("userBehaviorDescription")
     if isinstance(persona, str) and persona.strip():
         text = re.sub(r"\s+", " ", persona).strip()
         profile.persona = text[:PERSONA_MAX_CHARS] + ("…" if len(text) > PERSONA_MAX_CHARS else "")
     return profile
+
+
+def with_address_habits(profile: UserProfile | None, habits: dict[str, Any]) -> UserProfile:
+    """getUser profile + the chosen address's habit analytics from listAddresses (a copy; neither is changed)."""
+    base = profile or UserProfile()
+    merged = replace(base, categories=list(base.categories), patterns=list(base.patterns))
+    _add_behavior(merged, habits, {})
+    return merged
+
+
+def _add_behavior(profile: UserProfile, primary: dict[str, Any], fallback: dict[str, Any]) -> None:
+    """Categories and day/time patterns (getUser profileData or an address's analytics), without repeats."""
+    for label, count in _counts(_pick(primary, fallback, CATEGORY_KEYS))[:3]:
+        name = _merchant_type(label)
+        if not any(c.split(" (")[0] == name for c in profile.categories):
+            profile.categories.append(f"{name} ({count:g} pedidos)" if count is not None else name)
+    for label, _ in _counts(_pick(primary, fallback, PATTERN_KEYS))[:2]:
+        _add_pattern(profile, label)
+    for path, count in _leaf_counts(_pick(primary, fallback, COUNT_TABLE_KEYS))[:3]:
+        _add_pattern(profile, " ".join(path), count)
 
 
 def first_name(full_name: Any) -> str | None:
@@ -161,15 +182,6 @@ def shift_of(moment: datetime) -> str:
 
 def now_line(moment: datetime) -> str:
     return f"Agora: {WEEKDAYS[moment.weekday()]}, {moment:%H:%M} ({shift_of(moment)})"
-
-
-def craving_chips(profile: UserProfile | None, base: list[str], moment: datetime) -> list[str]:
-    """When the user usually orders at this time of day, lead with a matching suggestion."""
-    shift = shift_of(moment)
-    chip = CHIPS_BY_SHIFT.get(shift)
-    if not profile or not chip or shift not in profile.usual_shifts:
-        return base
-    return [chip] + [c for c in base if c != chip][:3]
 
 
 # ---------------------------------------------------------------- lenient readers
@@ -257,5 +269,4 @@ def _add_pattern(profile: UserProfile, label: str, count: float | None = None) -
     text = " · ".join(types + days + shifts) + (f" ({count:g} pedidos)" if count is not None else "")
     if text not in profile.patterns:
         profile.patterns.append(text)
-    profile.usual_shifts += [s for s in shifts if s not in profile.usual_shifts]
 
