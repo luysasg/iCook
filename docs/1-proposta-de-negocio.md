@@ -39,8 +39,8 @@ com a pessoa e entrega um pedido pronto para confirmar no mercado que faz mais s
 
 ## Valor para o iFood
 
-• Expansão de público: traz a terceira idade e quem ainda não tem o hábito do delivery de mercado, hoje perdidos para o supermercado físico.
-• Pedido completo em vez de abandono: converte intenção difusa ("quero comer algo") em pedido de mercado com ticket completo, em vez de abandono ou de vários pedidos pequenos.
-• Aumento do ticket médio: em vez de entrar no iFood Mercado só para comprar "o leite que faltou", a pessoa compra a cesta completa de uma refeição. O pedido mínimo do mercado vira gatilho para sugerir itens que combinam com a receita.
-• Aumento da recorrência: o iFood deixa de ser só o app da "pizza de sexta-feira" e vira o parceiro de planejamento alimentar da semana, trazendo quem cozinha em casa para dentro do iFood Mercado.
-• Novas linhas de receita: no futuro, marcas podem patrocinar receitas. Se a pessoa pede estrogonofe, o agente pode sugerir: "Adicionei o creme de leite Nestlé que está em promoção no mercado X, tudo bem?" Isso é receita de publicidade para o iFood.
+- Expansão de público: traz a terceira idade e quem ainda não tem o hábito do delivery de mercado, hoje perdidos para o supermercado físico. 
+- Pedido completo em vez de abandono: converte intenção difusa ("quero comer algo") em pedido de mercado com ticket completo, em vez de abandono ou de vários pedidos pequenos. 
+- Aumento do ticket médio: em vez de entrar no iFood Mercado só para comprar "o leite que faltou", a pessoa compra a cesta completa de uma refeição. O pedido mínimo do mercado vira gatilho para sugerir itens que combinam com a receita. 
+- Aumento da recorrência: o iFood deixa de ser só o app da "pizza de sexta-feira" e vira o parceiro de planejamento alimentar da semana, trazendo quem cozinha em casa para dentro do iFood Mercado. 
+- Novas linhas de receita: no futuro, marcas podem patrocinar receitas. Se a pessoa pede estrogonofe, o agente pode sugerir: "Adicionei o creme de leite Nestlé que está em promoção no mercado X, tudo bem?" Isso é receita de publicidade para o iFood.
