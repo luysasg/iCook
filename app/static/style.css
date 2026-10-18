@@ -136,6 +136,9 @@ details pre { max-height: 240px; overflow: auto; font-size: 11px; background: #f
   cursor: pointer;
 }
 .btn:hover:not(:disabled) { background: var(--red-dark); }
+.choices { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.btn-choice { text-align: left; }
+a.btn[hidden] { display: none !important; }
 .btn:disabled { background: #d9d9de; color: #8b8b94; cursor: not-allowed; }
 
 .summary { margin-top: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }

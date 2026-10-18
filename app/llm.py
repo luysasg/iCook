@@ -1,8 +1,13 @@
-"""Gemini wrapper: every call returns JSON validated against a schema."""
+"""Gemini wrapper: every call returns JSON validated against a schema.
+
+Models in config.GEMINI_MODELS are tried in order: a slow, overloaded or rate-limited
+model hands the request to the next one instead of making the user wait.
+"""
 
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from google import genai
@@ -28,7 +33,11 @@ def to_contents(history: list[dict[str, str]]) -> list[types.Content]:
 
 
 async def generate_json(
-    system: str, contents: list[types.Content] | str, schema: dict[str, Any], temperature: float = 0.5
+    system: str,
+    contents: list[types.Content] | str,
+    schema: dict[str, Any],
+    temperature: float = 0.5,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     cfg = types.GenerateContentConfig(
         system_instruction=system,
@@ -36,24 +45,30 @@ async def generate_json(
         response_json_schema=schema,
         temperature=temperature,
     )
-    for attempt in range(3):
+    timeout = timeout or config.GEMINI_TIMEOUT
+    failures = []
+    for model in config.GEMINI_MODELS:
+        started = time.monotonic()
         try:
-            response = await _client.aio.models.generate_content(
-                model=config.GEMINI_MODEL, contents=contents, config=cfg
+            response = await asyncio.wait_for(
+                _client.aio.models.generate_content(model=model, contents=contents, config=cfg), timeout
             )
+        except TimeoutError:
+            log.warning("%s: no answer after %.0fs, trying the next model", model, timeout)
+            failures.append("timeout")
+            continue
         except errors.APIError as e:
-            # Free tier is ~10 requests/minute: back off a little before giving up.
-            if e.code == 429:
-                if attempt < 2:
-                    await asyncio.sleep(10 * (attempt + 1))
-                    continue
-                raise RateLimited(str(e)) from e
-            if e.code >= 500 and attempt < 2:
-                await asyncio.sleep(2)
-                continue
-            raise LLMError(str(e)) from e
+            log.warning("%s: error %s (%s), trying the next model", model, e.code, str(e)[:200])
+            failures.append(e.code)
+            continue
         try:
-            return json.loads(response.text or "")
+            data = json.loads(response.text or "")
         except json.JSONDecodeError:
-            log.warning("invalid JSON from model: %r", (response.text or "")[:500])
-    raise LLMError("model did not return valid JSON")
+            log.warning("%s: invalid JSON: %r", model, (response.text or "")[:500])
+            failures.append("json")
+            continue
+        log.info("%s answered in %.1fs", model, time.monotonic() - started)
+        return data
+    if failures and all(f == 429 for f in failures):
+        raise RateLimited("every model is rate limited")
+    raise LLMError(f"every model failed: {failures}")

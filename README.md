@@ -24,8 +24,9 @@ Tests (offline, fake iFood + scripted LLM): `uv run pytest`
 
 | Step | Who does it |
 |---|---|
+| Login | Required before anything: every message gets a **Conectar iFood** button until the account is connected |
+| Delivery address | Right after login: `listAddresses`, the user picks where they are now (button or text). "Trocar endereço" later redoes the comparison |
 | Recipe, servings, allergies, pantry, shopping list | Gemini (one call per user message, JSON output) |
-| Delivery address | Code: `listAddresses`, last used address first |
 | Store comparison | Code: one `searchOffers` per ingredient across open GROCERIES stores, top `MAX_STORES` by coverage, gap-filling searches inside each of them, then **one** Gemini call to match products and round quantities up |
 | Cart | Code: `createCart` → `getCartDeliveryMethods` → `setCartDelivery` (ASAP) → `listPaymentMethods` → `setCartPayment` → `getCart` |
 | Order | Only the **Confirmar pedido** button calls `submitOrder` (`userConsent: true`). The LLM has no access to it. |
@@ -50,3 +51,5 @@ Code map: `app/main.py` (web + login), `app/agent.py` (conversation state machin
 - **No address creation**: if the account has no saved address, the user is asked to add one
   in the iFood app.
 - Sessions live in memory (restart = log in again). Gemini free tier is ~10 requests/minute.
+- **Gemini fallback chain** (`GEMINI_MODELS`): each model gets `GEMINI_TIMEOUT` seconds (45 s for
+  product matching); on a timeout or any API error (overload, 429, 404) the next model answers.

@@ -5,6 +5,7 @@ const sendButton = document.getElementById("send");
 
 let busy = false;
 let phase = "chat";
+let connected = false;
 
 // ---------------------------------------------------------------- helpers
 
@@ -82,6 +83,18 @@ function renderStores(data) {
   return cards;
 }
 
+function renderAddresses(data) {
+  const list = el("div", "choices");
+  data.options.forEach((a) => {
+    const button = el("button", "btn btn-choice", `📍 ${escapeHtml(a.label)}`);
+    button.type = "button";
+    button.dataset.addressBtn = a.number;
+    button.addEventListener("click", () => chooseAddress(a.number, a.label));
+    list.appendChild(button);
+  });
+  return list;
+}
+
 function renderSummary(data) {
   const box = el("div", "summary");
   box.innerHTML = `
@@ -115,9 +128,12 @@ function render(message) {
   } else if (message.kind === "summary" && message.data) {
     bubble.classList.add("wide");
     bubble.appendChild(renderSummary(message.data));
+  } else if (message.kind === "addresses" && message.data) {
+    bubble.appendChild(renderAddresses(message.data));
   } else if (message.kind === "login") {
     const link = el("a", "btn", "Conectar iFood");
     link.href = "/login";
+    link.dataset.loginBtn = "1";
     link.style.display = "inline-block";
     link.style.marginTop = "8px";
     link.style.textDecoration = "none";
@@ -136,6 +152,11 @@ function lastOf(kind) {
 function refreshControls() {
   const stores = lastOf("stores");
   const summary = lastOf("summary");
+  const addresses = lastOf("addresses");
+  chat.querySelectorAll("[data-address-btn]").forEach((b) => {
+    b.disabled = busy || phase !== "address" || b.closest(".msg") !== addresses;
+  });
+  chat.querySelectorAll("[data-login-btn]").forEach((b) => { b.hidden = connected; });
   chat.querySelectorAll("[data-store-btn]").forEach((b) => {
     b.disabled = busy || !["compare", "checkout"].includes(phase) || b.closest(".msg") !== stores;
   });
@@ -149,6 +170,7 @@ function refreshControls() {
 
 function applyState(state) {
   phase = state.phase;
+  connected = state.connected;
   document.getElementById("connect").hidden = state.connected;
   document.getElementById("connected").hidden = !state.connected;
   state.messages.forEach(render);
@@ -199,14 +221,27 @@ function chooseStore(number, name) {
   run(`Quero o mercado ${name}`, "Montando seu carrinho…", () => api("/api/choose_store", { number }));
 }
 
+function chooseAddress(number, label) {
+  run(`Estou em ${label}`, "", () => api("/api/choose_address", { number }));
+}
+
 function confirmOrder() {
   run("✅ Confirmar pedido", "Finalizando o pedido…", () => api("/api/confirm", {}));
 }
 
 document.getElementById("reset").addEventListener("click", async () => {
   if (busy) return;
+  busy = true;
   chat.innerHTML = "";
-  applyState(await api("/api/reset", {}));
+  refreshControls();
+  const typing = showTyping("");
+  try {
+    applyState(await api("/api/reset", {}));
+  } finally {
+    typing.remove();
+    busy = false;
+    refreshControls();
+  }
 });
 
 // Long operations (searching several stores) get a hint after a few seconds.

@@ -46,9 +46,10 @@ class Session:
     tokens: auth.Tokens | None = None
     oauth_state: str | None = None
     pkce_verifier: str | None = None
-    phase: str = "chat"  # chat | compare | checkout | need_document | ordered
+    phase: str = "chat"  # address | chat | compare | checkout | need_document | ordered
     history: list[dict[str, str]] = field(default_factory=list)  # what the LLM sees
     messages: list[dict[str, Any]] = field(default_factory=list)  # what the UI renders
+    addresses: list[shopping.Address] = field(default_factory=list)  # saved on the iFood account
     servings: int | None = None
     shopping_list: list[shopping.Ingredient] = field(default_factory=list)
     address: shopping.Address | None = None
@@ -58,7 +59,8 @@ class Session:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def __post_init__(self) -> None:
-        self.say(prompts.WELCOME, remember=False)
+        if not self.connected:
+            self.say(prompts.WELCOME, kind="login", remember=False)
 
     @property
     def connected(self) -> bool:
@@ -79,9 +81,10 @@ class Session:
         else:
             self.history.append({"role": role, "text": text})
 
-    def hear(self, text: str, history_text: str | None = None) -> None:
+    def hear(self, text: str, history_text: str | None = None, remember: bool = True) -> None:
         self.messages.append({"id": secrets.token_hex(4), "role": "user", "kind": "text", "text": text})
-        self._remember("user", history_text or text)
+        if remember:
+            self._remember("user", history_text or text)
 
     def say(
         self,
@@ -134,12 +137,10 @@ async def _run(s: Session, operation: Callable[[], Awaitable[list[dict]]], failu
         return [s.say(failure, remember=False)]
 
 
-def _disconnected(s: Session) -> dict:
-    return s.say(
-        "Sua conta iFood está desconectada. Clique em **Conectar iFood** para entrar de novo.",
-        kind="login",
-        remember=False,
-    )
+def _disconnected(
+    s: Session, text: str = "Sua conta iFood está desconectada. Clique em **Conectar iFood** para entrar de novo."
+) -> dict:
+    return s.say(text, kind="login", remember=False)
 
 
 def _rate_limited(s: Session) -> dict:
@@ -157,7 +158,10 @@ def _state_block(s: Session) -> str:
     if s.shopping_list:
         lines.append("Lista de compras atual:")
         lines += [f"- {i.label()}" for i in s.shopping_list]
-    if s.address:
+    if s.phase == "address":
+        lines.append("Endereços salvos na conta iFood (a pessoa precisa escolher um):")
+        lines += [f"{n}. {a.label}" for n, a in enumerate(s.addresses, 1)]
+    elif s.address:
         lines.append(f"Endereço de entrega: {s.address.label}")
     if s.phase == "compare":
         lines.append("Mercados mostrados na tela:")
@@ -193,6 +197,14 @@ def _parse_list(raw: Any) -> list[shopping.Ingredient]:
 
 
 async def handle_message(s: Session, text: str) -> list[dict]:
+    # Nothing happens before the iFood account is connected and an address is chosen.
+    if not s.connected:
+        s.hear(text, remember=False)
+        return [_disconnected(s, prompts.LOGIN_REQUIRED)]
+    if s.phase == "address" and not s.addresses:
+        s.hear(text, remember=False)
+        return await ask_address(s)
+
     if s.phase == "need_document":
         if re.search(r"\d", text):
             return await _submit_with_document(s, text)
@@ -218,13 +230,22 @@ async def handle_message(s: Session, text: str) -> list[dict]:
         out.append(s.say(reply))
 
     action = decision.get("action", "none")
-    if action == "search_stores":
+    if s.phase == "address":
+        if action == "choose_address" and isinstance(decision.get("address_number"), int):
+            out += await choose_address(s, decision["address_number"] - 1)
+        return out
+
+    if action == "change_address" and s.phase != "ordered":
+        out += await ask_address(s)
+    elif action == "search_stores":
         if items := _parse_list(decision.get("shopping_list")):
             s.shopping_list = items
-        if s.shopping_list:
-            out += await search_stores(s)
-        else:
+        if not s.shopping_list:
             out.append(s.say("Antes de buscar, preciso fechar a lista de compras com você. 🙂"))
+        elif s.address is None:
+            out += await ask_address(s)
+        else:
+            out += await search_stores(s)
     elif action == "choose_store" and s.options and isinstance(decision.get("store_number"), int):
         out += await choose_store(s, decision["store_number"] - 1)
     elif action == "track_order" and s.order_id:
@@ -236,17 +257,57 @@ async def handle_message(s: Session, text: str) -> list[dict]:
     return out
 
 
-async def search_stores(s: Session) -> list[dict]:
+async def ask_address(s: Session, intro: str = "") -> list[dict]:
+    """List the account's saved addresses so the user picks where they are now."""
+    s.phase = "address"
+    s.addresses = []
+    s.options = []
+    s.checkout = None
+
     async def operation() -> list[dict]:
         async with _ifood(s) as client:
-            s.address = shopping.pick_address(await client.call("listAddresses", {}))
-            if not s.address:
-                return [
-                    s.say(
-                        "Não encontrei um endereço de entrega salvo na sua conta iFood. "
-                        "Cadastre um endereço no app do iFood e me chame de novo. 🏠"
-                    )
-                ]
+            s.addresses = shopping.parse_addresses(await client.call("listAddresses", {}))
+        if not s.addresses:
+            return [
+                s.say(
+                    f"{intro}Não encontrei nenhum endereço salvo na sua conta iFood. 🏠 "
+                    "Cadastre um no app do iFood e me mande qualquer mensagem aqui que eu procuro de novo.",
+                    remember=False,
+                )
+            ]
+        return [
+            s.say(
+                f"{intro}Onde você está agora? Escolha o endereço de entrega:",
+                kind="addresses",
+                data={"options": [{"number": n, "label": a.label} for n, a in enumerate(s.addresses, 1)]},
+                remember=False,
+            )
+        ]
+
+    return await _run(
+        s, operation, "Não consegui carregar seus endereços do iFood. Me mande qualquer mensagem que eu tento de novo."
+    )
+
+
+async def choose_address(s: Session, index: int, from_button: bool = False) -> list[dict]:
+    if s.phase != "address" or not 0 <= index < len(s.addresses):
+        return [s.say("Não encontrei esse endereço. Escolha um da lista. 🙂", remember=False)]
+    s.address = s.addresses[index]
+    if from_button:
+        s.hear(f"Estou em {s.address.label}")
+    s.phase = "chat"
+    if s.shopping_list:
+        # The address changed after a search: stores and fees depend on it.
+        return [s.say(f"Endereço atualizado para **{s.address.label}**. 📍 Vou refazer a comparação.")] + (
+            await search_stores(s)
+        )
+    return [s.say(f"Combinado, entrega em **{s.address.label}**. 📍\n\n{prompts.ASK_CRAVING}")]
+
+
+async def search_stores(s: Session) -> list[dict]:
+    async def operation() -> list[dict]:
+        assert s.address is not None
+        async with _ifood(s) as client:
             location = {"latitude": s.address.latitude, "longitude": s.address.longitude}
             options, not_found = await shopping.find_store_options(client, s.shopping_list, location)
 

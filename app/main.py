@@ -71,6 +71,9 @@ async def callback(
         return _error_page(f"Não foi possível concluir o login: {e}")
     finally:
         s.oauth_state = s.pkce_verifier = None
+    # First thing after login: the user picks where they are now.
+    async with s.lock:
+        await agent.ask_address(s, intro="Conta iFood conectada! ✅ ")
     return RedirectResponse("/")
 
 
@@ -86,7 +89,7 @@ class ChatIn(BaseModel):
     message: str
 
 
-class StoreIn(BaseModel):
+class ChoiceIn(BaseModel):
     number: int
 
 
@@ -107,10 +110,17 @@ async def chat(request: Request, body: ChatIn) -> JSONResponse:
 
 
 @app.post("/api/choose_store")
-async def choose_store(request: Request, body: StoreIn) -> JSONResponse:
+async def choose_store(request: Request, body: ChoiceIn) -> JSONResponse:
     s = _session(request)
     async with s.lock:
         return _payload(s, await agent.choose_store(s, body.number - 1, from_button=True))
+
+
+@app.post("/api/choose_address")
+async def choose_address(request: Request, body: ChoiceIn) -> JSONResponse:
+    s = _session(request)
+    async with s.lock:
+        return _payload(s, await agent.choose_address(s, body.number - 1, from_button=True))
 
 
 @app.post("/api/confirm")
@@ -125,6 +135,9 @@ async def reset(request: Request) -> JSONResponse:
     old = _session(request)
     s = agent.Session(old.id, tokens=old.tokens)
     SESSIONS[old.id] = s
+    if s.connected:
+        async with s.lock:
+            await agent.ask_address(s)
     return _payload(s, s.messages)
 
 

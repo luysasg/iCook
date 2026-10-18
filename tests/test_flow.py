@@ -1,12 +1,15 @@
 """Offline tests: a fake iFood MCP (shapes based on a real searchOffers response) and a scripted LLM."""
 
+import asyncio
 import re
 import time
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
+from google.genai import errors
 
-from app import agent, auth, ifood, llm, prompts, shopping
+from app import agent, auth, config, ifood, llm, prompts, shopping
 from app.ifood import IFoodError
 from app.jsonutil import as_number
 
@@ -141,7 +144,7 @@ class ScriptedLLM:
         self.turns = []
         self.histories = []
 
-    async def generate_json(self, system, contents, schema, temperature=0.5):
+    async def generate_json(self, system, contents, schema, temperature=0.5, timeout=None):
         if system == prompts.PICKER_SYSTEM:
             picks = {}
             for ref in re.findall(r"\[(M\d+-\d+-\d+)\]", contents):
@@ -171,9 +174,14 @@ def fake(monkeypatch):
     return fake_ifood, scripted
 
 
-def connected_session():
+HOME = shopping.Address("addr-home", "Casa (Av. Paulista, 1000)", -23.56, -46.65)
+
+
+def connected_session(address=HOME):
+    """A logged-in session that already picked its delivery address."""
     s = agent.Session("sid")
     s.tokens = auth.Tokens("access", "refresh", time.time() + 3600)
+    s.address = address
     return s
 
 
@@ -199,7 +207,7 @@ async def test_full_flow_orders_only_after_button(fake):
     out = await agent.handle_message(s, "2 pessoas, pode buscar")
 
     assert s.phase == "compare" and s.servings == 2
-    assert s.address.address_id == "addr-home"  # last used address wins
+    assert "listAddresses" not in ifood_fake.tools()  # the address was chosen before the chat
     stores_msg = out[-1]
     assert stores_msg["kind"] == "stores"
     options = stores_msg["data"]["options"]
@@ -284,6 +292,131 @@ async def test_unauthorized_asks_to_reconnect(monkeypatch, fake):
     out = await agent.handle_message(s, "pode buscar")
     assert out[-1]["kind"] == "login"
     assert s.tokens is None
+
+
+async def test_messages_before_login_only_ask_to_connect(fake):
+    ifood_fake, scripted = fake
+    s = agent.Session("sid")
+    assert s.messages[0]["kind"] == "login"
+
+    out = await agent.handle_message(s, "quero fazer lasanha")
+    assert out[-1]["kind"] == "login"
+    assert scripted.histories == [] and ifood_fake.calls == []
+    assert s.history == []
+
+
+async def test_address_is_chosen_first_by_button(fake):
+    s = connected_session(address=None)
+
+    out = await agent.ask_address(s, intro="Conta iFood conectada! ✅ ")
+    assert s.phase == "address"
+    assert out[-1]["kind"] == "addresses"
+    # Last used address comes first.
+    assert [a["label"] for a in out[-1]["data"]["options"]] == ["Casa (Av. Paulista, 1000)", "Trabalho (Rua B, 2)"]
+
+    out = await agent.choose_address(s, 1, from_button=True)
+    assert s.phase == "chat" and s.address.address_id == "addr-work"
+    assert prompts.ASK_CRAVING in out[-1]["text"]
+    assert s.history[0] == {"role": "user", "text": "Estou em Trabalho (Rua B, 2)"}
+
+
+async def test_address_by_text_and_nothing_else_until_chosen(fake):
+    ifood_fake, scripted = fake
+    s = connected_session(address=None)
+    await agent.ask_address(s)
+    scripted.turns = [
+        {"reply": "Busco já!", "action": "search_stores", "shopping_list": SHOPPING_LIST},
+        {"reply": "Fechado!", "action": "choose_address", "address_number": 1},
+    ]
+
+    await agent.handle_message(s, "quero strogonoff, pode buscar")
+    assert s.phase == "address" and "searchOffers" not in ifood_fake.tools()
+    assert "1. Casa (Av. Paulista, 1000)" in agent._state_block(s)  # the LLM sees the numbered list
+
+    await agent.handle_message(s, "tô em casa")
+    assert s.phase == "chat" and s.address.address_id == "addr-home"
+
+
+async def test_changing_address_redoes_the_comparison(fake):
+    ifood_fake, scripted = fake
+    s = connected_session()
+    scripted.turns = [
+        {"reply": "Buscando!", "action": "search_stores", "shopping_list": SHOPPING_LIST[:1]},
+        {"reply": "Claro!", "action": "change_address"},
+    ]
+    await agent.handle_message(s, "pode buscar")
+    assert s.phase == "compare"
+
+    out = await agent.handle_message(s, "na verdade estou no trabalho")
+    assert s.phase == "address" and s.options == [] and out[-1]["kind"] == "addresses"
+
+    searches = ifood_fake.tools().count("searchOffers")
+    out = await agent.choose_address(s, 1, from_button=True)
+    assert s.phase == "compare" and s.address.address_id == "addr-work"
+    assert out[-1]["kind"] == "stores"
+    assert ifood_fake.tools().count("searchOffers") > searches
+
+
+async def test_no_saved_address(fake, monkeypatch):
+    ifood_fake, scripted = fake
+    original = ifood_fake.call
+
+    async def call(tool, args):
+        if tool == "listAddresses":
+            return {"addresses": []}
+        return await original(tool, args)
+
+    monkeypatch.setattr(ifood_fake, "call", call)
+    s = connected_session(address=None)
+    out = await agent.ask_address(s)
+    assert s.phase == "address" and "app do iFood" in out[-1]["text"]
+    # Any message looks the addresses up again, without calling the LLM.
+    out = await agent.handle_message(s, "pronto, cadastrei")
+    assert scripted.histories == [] and "app do iFood" in out[-1]["text"]
+
+
+class FakeModels:
+    """Stands in for client.aio.models; each model name has a scripted behaviour."""
+
+    def __init__(self, behaviour):
+        self.behaviour = behaviour
+        self.tried = []
+
+    async def generate_content(self, model, contents, config):
+        self.tried.append(model)
+        result = self.behaviour[model]
+        if result == "slow":
+            await asyncio.sleep(1)
+        if isinstance(result, Exception):
+            raise result
+        return SimpleNamespace(text=result)
+
+
+def gemini_with(monkeypatch, behaviour):
+    models = FakeModels(behaviour)
+    monkeypatch.setattr(llm, "_client", SimpleNamespace(aio=SimpleNamespace(models=models)))
+    monkeypatch.setattr(config, "GEMINI_MODELS", list(behaviour))
+    return models
+
+
+async def test_gemini_falls_back_to_the_next_model(monkeypatch):
+    models = gemini_with(
+        monkeypatch,
+        {
+            "overloaded": errors.ServerError(503, {"error": {"message": "The model is overloaded."}}),
+            "slow": "slow",
+            "ok": '{"reply": "oi", "action": "none"}',
+        },
+    )
+    assert await llm.generate_json("sys", "oi", {}, timeout=0.05) == {"reply": "oi", "action": "none"}
+    assert models.tried == ["overloaded", "slow", "ok"]
+
+
+async def test_gemini_rate_limited_everywhere(monkeypatch):
+    quota = errors.ClientError(429, {"error": {"message": "Resource exhausted"}})
+    gemini_with(monkeypatch, {"a": quota, "b": quota})
+    with pytest.raises(llm.RateLimited):
+        await llm.generate_json("sys", "oi", {})
 
 
 def test_payment_fallbacks():

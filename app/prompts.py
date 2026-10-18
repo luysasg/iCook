@@ -2,8 +2,10 @@
 
 WELCOME = (
     "Oi! 👋 Eu transformo aquela vontade de comer em um pedido de mercado no iFood. "
-    "Me conta: o que você está com vontade de comer ou cozinhar hoje?"
+    "Para começar, conecte sua conta iFood:"
 )
+LOGIN_REQUIRED = "Antes de tudo, preciso que você conecte sua conta iFood. 🔐 É só clicar no botão abaixo:"
+ASK_CRAVING = "Me conta: o que você está com vontade de comer ou cozinhar hoje?"
 
 AGENT_SYSTEM = """\
 Você é o "Bateu a Vontade", um assistente culinário que transforma a vontade de comer de uma pessoa \
@@ -28,6 +30,15 @@ Você pode juntar etapas quando a pessoa já tiver dado a informação.
 - search_term: termo curto de busca de supermercado, sem quantidade e sem marca \
 ("peito de frango", "tomate", "creme de leite"). Inclua a restrição quando fizer sentido ("leite sem lactose").
 - quantity e unit: quantidade total necessária (unit: g, kg, ml, l, unidade, dente, maço, lata, pacote...).
+
+## Endereço de entrega
+- Fase "address": a pessoa precisa escolher onde está agora entre os endereços listados no estado \
+antes de qualquer outra coisa. Se ela indicar um ("casa", "o segundo", "Rua B"), use action="choose_address" \
+com address_number (número do endereço). Se ainda não escolheu, peça gentilmente que escolha um da lista \
+(não comece a conversa sobre receitas ainda). Endereço novo não dá para cadastrar por aqui: oriente a \
+cadastrar no app do iFood.
+- Em qualquer outra fase antes do pedido feito, se a pessoa quiser trocar o endereço de entrega \
+→ action="change_address".
 
 ## Outras ações
 - Fase "compare" (mercados comparados na tela): se a pessoa escolher um mercado por texto \
@@ -54,7 +65,16 @@ AGENT_SCHEMA = {
         "reply": {"type": "string", "description": "Mensagem para a pessoa, em português do Brasil."},
         "action": {
             "type": "string",
-            "enum": ["none", "search_stores", "choose_store", "track_order", "order_details", "restart"],
+            "enum": [
+                "none",
+                "choose_address",
+                "change_address",
+                "search_stores",
+                "choose_store",
+                "track_order",
+                "order_details",
+                "restart",
+            ],
         },
         "servings": {"type": "integer", "description": "Número de pessoas, se já souber."},
         "shopping_list": {
@@ -71,6 +91,7 @@ AGENT_SCHEMA = {
             },
         },
         "store_number": {"type": "integer", "description": "Número do mercado escolhido (começa em 1)."},
+        "address_number": {"type": "integer", "description": "Número do endereço escolhido (começa em 1)."},
     },
     "required": ["reply", "action"],
 }

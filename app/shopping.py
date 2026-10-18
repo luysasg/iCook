@@ -105,33 +105,32 @@ class Checkout:
 # ---------------------------------------------------------------- address
 
 
-def pick_address(data: dict[str, Any]) -> Address | None:
-    """Last used address first, then most used in 30 days, then the first one."""
-    addresses = dicts_with(data, "addressId")
-    if not addresses:
-        return None
-    best = max(
-        addresses,
-        key=lambda a: (
-            first_value(a, "isLastUsedAddress") is True,
-            first_value(a, "isMostUsedAddress30d") is True,
-        ),
+def parse_addresses(data: dict[str, Any]) -> list[Address]:
+    """Saved addresses with coordinates: last used first, then most used in 30 days."""
+    raw = sorted(
+        dicts_with(data, "addressId"),
+        key=lambda a: (first_value(a, "isLastUsedAddress") is True, first_value(a, "isMostUsedAddress30d") is True),
+        reverse=True,
     )
-    coords = first_value(best, "coordinates") or best
-    latitude = as_number(first_value(coords, "latitude", "lat"))
-    longitude = as_number(first_value(coords, "longitude", "lng", "lon"))
-    if latitude is None or longitude is None:
-        return None
-    alias = best.get("alias") if isinstance(best.get("alias"), str) else None
-    street = next(
-        (v for k in ("formattedAddress", "location", "streetName", "address") if isinstance(v := best.get(k), str)),
-        None,
-    )
-    if alias and street:
-        label = f"{alias.title()} ({street})"
-    else:
-        label = alias or street or "endereço salvo"
-    return Address(str(best["addressId"]), label, latitude, longitude)
+    addresses = []
+    for entry in raw:
+        coords = first_value(entry, "coordinates") or entry
+        latitude = as_number(first_value(coords, "latitude", "lat"))
+        longitude = as_number(first_value(coords, "longitude", "lng", "lon"))
+        if latitude is None or longitude is None:
+            log.warning("address %s has no coordinates, skipping", entry.get("addressId"))
+            continue
+        alias = entry.get("alias") if isinstance(entry.get("alias"), str) else None
+        street = next(
+            (v for k in ("formattedAddress", "location", "streetName", "address") if isinstance(v := entry.get(k), str)),
+            None,
+        )
+        if alias and street:
+            label = f"{alias.title()} ({street})"
+        else:
+            label = alias or street or "endereço salvo"
+        addresses.append(Address(str(entry["addressId"]), label, latitude, longitude))
+    return addresses
 
 
 # ---------------------------------------------------------------- search & compare
@@ -263,7 +262,9 @@ async def _match_products(
     picks: dict[str, list[Pick]] = {s.merchant_id: [] for s in stores}
     if not refs:
         return picks
-    data = await llm.generate_json(prompts.PICKER_SYSTEM, "\n".join(lines), prompts.PICKER_SCHEMA, temperature=0.1)
+    data = await llm.generate_json(
+        prompts.PICKER_SYSTEM, "\n".join(lines), prompts.PICKER_SCHEMA, temperature=0.1, timeout=45
+    )
     for store_entry in data.get("stores") or []:
         for entry in store_entry.get("picks") or []:
             ref = str(entry.get("item_ref") or "").strip().strip("[]")
