@@ -2,6 +2,8 @@
 
 ## O problema
 
+### Para quem já é cliente do iFood
+
 "Bateu a vontade de comer um estrogonofe" é diferente de "preciso comprar creme de leite, 600 g de
 frango, champignon e cebola". Entre a vontade e o pedido de mercado existe um trabalho manual
 que quase ninguém gosta de fazer:
@@ -15,11 +17,16 @@ que quase ninguém gosta de fazer:
 Na prática, muita gente desiste no meio do caminho, pede comida pronta ou faz o pedido de mercado
 incompleto e precisa de um segundo pedido.
 
+### Para quem não é cliente do iFood
+
+Para os idosos, a barreira é ainda maior. Muitos usam o WhatsApp no dia a dia, mas acham os apps de mercado confusos: navegar por categorias, buscar item por item e montar o carrinho exige uma familiaridade que eles não têm. Sem conseguir pedir pelo app, acabam indo ao supermercado físico, mesmo quando carregar as compras é difícil. Para o iFood, são clientes perdidos para o supermercado físico.
+
 ## Para quem
 
 Quem quer cozinhar em casa e usa o iFood Mercado, mas não quer montar a lista de compras na mão.
 Em especial: quem está sem ideia do que fazer, quem cozinha para várias pessoas ou para alguém com
 restrição alimentar.
+Há também um público que o iFood hoje não alcança: a terceira idade e quem não tem o hábito do delivery de mercado.
 
 ## Proposta de valor
 
@@ -34,10 +41,12 @@ com a pessoa e entrega um pedido pronto para confirmar no mercado que faz mais s
 | **Segurança alimentar** | Restrições são perguntadas antes de qualquer busca, e cada produto é marcado como compatível, incerto ou evitar. |
 | **Controle total** | Nada é comprado sem o toque em **Confirmar pedido**. |
 | **Personalização** | Sugere pratos a partir do horário e dos hábitos do perfil iFood. |
+| **Acessível a quem não usa apps de mercado** | A interface é uma conversa, como no WhatsApp: não exige navegar por categorias nem montar carrinho à mão. |
 
 ## Valor para o iFood
 
-- Converte intenção difusa ("quero comer algo") em **pedido de mercado** com ticket completo,
-  em vez de abandono ou de vários pedidos pequenos.
-- Usa o mínimo do mercado como gatilho para sugerir itens que combinam com a receita (aumenta o ticket).
-- Leva a recorrência de quem cozinha em casa para dentro do iFood Mercado.
+- Expansão de público: traz a terceira idade e quem ainda não tem o hábito do delivery de mercado, hoje perdidos para o supermercado físico. 
+- Pedido completo em vez de abandono: converte intenção difusa ("quero comer algo") em pedido de mercado com ticket completo, em vez de abandono ou de vários pedidos pequenos. 
+- Aumento do ticket médio: em vez de entrar no iFood Mercado só para comprar "o leite que faltou", a pessoa compra a cesta completa de uma refeição. O pedido mínimo do mercado vira gatilho para sugerir itens que combinam com a receita. 
+- Aumento da recorrência: o iFood deixa de ser só o app da "pizza de sexta-feira" e vira o parceiro de planejamento alimentar da semana, trazendo quem cozinha em casa para dentro do iFood Mercado. 
+- Novas linhas de receita: no futuro, marcas podem patrocinar receitas. Se a pessoa pede estrogonofe, o agente pode sugerir: "Adicionei o creme de leite Nestlé que está em promoção no mercado X, tudo bem?" Isso é receita de publicidade para o iFood.
