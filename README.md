@@ -10,6 +10,8 @@ em **Confirmar pedido**.
 Projeto feito para um hackathon do iFood. Serve para quem quer cozinhar em casa sem montar a
 lista de compras na mão.
 
+https://github.com/user-attachments/assets/c1be25c8-4d94-464c-b891-d190c7745cf1
+
 ## Funcionalidades
 
 - **Login com a conta iFood** (OAuth 2.1 + PKCE) em uma janela pop-up. Mensagens enviadas antes do
